@@ -1,3 +1,15 @@
+import sys
+if sys.platform == "win32":
+    import asyncio
+    from asyncio.selector_events import BaseSelectorEventLoop
+    _orig_read_from_self = BaseSelectorEventLoop._read_from_self
+    def _read_from_self_patched(self):
+        try:
+            _orig_read_from_self(self)
+        except (ConnectionResetError, OSError):
+            pass
+    BaseSelectorEventLoop._read_from_self = _read_from_self_patched
+
 import json
 import os
 import re
@@ -42,6 +54,7 @@ from schemas import (
     SeatResponse,
     TicketTypeCreateRequest,
     TicketTypeResponse,
+    TicketTypeUpdateRequest,
     ZoneCreateRequest,
     ZoneResponse,
     ZoneWithSeatsResponse
@@ -91,8 +104,13 @@ def compute_active_pricing(ticket_type: TicketType, target_time: Optional[dateti
 
 
 def format_ticket_type_response(tt: TicketType, target_time: Optional[datetime] = None) -> TicketTypeResponse:
-    """Chuẩn hóa dữ liệu trả về của TicketType kèm giá hiệu lực hiện tại."""
+    """Chuẩn hóa dữ liệu trả về của TicketType kèm giá hiệu lực hiện tại và thời gian bán vé."""
     current_price, active_rule = compute_active_pricing(tt, target_time)
+    sale_start = getattr(tt, "sale_start_time", None) or tt.created_at
+    sale_end = getattr(tt, "sale_end_time", None)
+    if not sale_end and getattr(tt, "event", None):
+        sale_end = tt.event.start_time
+
     return TicketTypeResponse(
         id=tt.id,
         event_id=tt.event_id,
@@ -103,6 +121,8 @@ def format_ticket_type_response(tt: TicketType, target_time: Optional[datetime] 
         max_per_order=tt.max_per_order,
         is_student_only=tt.is_student_only,
         student_email_domain=tt.student_email_domain,
+        sale_start_time=sale_start,
+        sale_end_time=sale_end,
         current_price=current_price,
         active_rule_name=active_rule,
         pricing_rules=[
@@ -112,21 +132,25 @@ def format_ticket_type_response(tt: TicketType, target_time: Optional[datetime] 
                 rule_name=r.rule_name,
                 price=float(r.price),
                 start_time=r.start_time,
-                end_time=r.end_time
+                end_time=r.end_time,
+                created_at=getattr(r, "created_at", None),
+                updated_at=getattr(r, "updated_at", None)
             )
             for r in (tt.pricing_rules or [])
         ],
-        created_at=tt.created_at
+        created_at=tt.created_at,
+        updated_at=getattr(tt, "updated_at", None)
     )
 
 
-def format_event_response(ev: Event) -> EventResponse:
+def format_event_response(ev: Event, org_event_id: Optional[int] = None) -> EventResponse:
     cancelled_time = getattr(ev, "cancelled_at", None)
     if not cancelled_time and ev.status == EventStatus.CANCELLED:
         cancelled_time = ev.updated_at
 
     return EventResponse(
         id=ev.id,
+        org_event_id=org_event_id,
         organizer_id=ev.organizer_id,
         category_id=ev.category_id,
         category_name=ev.category.name if ev.category else None,
@@ -376,6 +400,16 @@ async def lifespan(app: FastAPI):
         for alter_sql in (
             "ALTER TABLE events ADD COLUMN cancel_reason TEXT NULL",
             "ALTER TABLE events ADD COLUMN cancelled_at DATETIME NULL",
+            "ALTER TABLE event_categories ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE event_categories ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE event_zones ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE seats ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE seats ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE ticket_types ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE ticket_types ADD COLUMN sale_start_time DATETIME NULL",
+            "ALTER TABLE ticket_types ADD COLUMN sale_end_time DATETIME NULL",
+            "ALTER TABLE ticket_pricing_rules ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE ticket_pricing_rules ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
         ):
             try:
                 conn.execute(text(alter_sql))
@@ -386,6 +420,42 @@ async def lifespan(app: FastAPI):
     db = next(get_db())
     try:
         seed_initial_event_data(db)
+        # Bổ sung mặc định thời gian bán vé (trước thời gian diễn ra sự kiện) cho các loại vé cũ chưa có
+        all_tts = db.query(TicketType).options(joinedload(TicketType.event)).all()
+        updated_tt = False
+        for tt in all_tts:
+            if not tt.sale_start_time:
+                tt.sale_start_time = tt.created_at or datetime.utcnow()
+                updated_tt = True
+            if not tt.sale_end_time and tt.event:
+                tt.sale_end_time = tt.event.start_time
+                updated_tt = True
+        if updated_tt:
+            db.commit()
+        # Tự động khắc phục (Auto-repair): Sinh ghế cho các khu vực SEATED nếu CSDL chưa có ghế (ví dụ: zone 3 của Sự kiện 2)
+        seated_zones = db.query(EventZone).filter(EventZone.zone_type == ZoneType.SEATED).all()
+        for z in seated_zones:
+            seat_count = db.query(Seat).filter(Seat.zone_id == z.id).count()
+            if seat_count == 0 and z.grid_rows and z.grid_cols:
+                new_seats = []
+                for r in range(z.grid_rows):
+                    row_code = chr(ord("A") + r)
+                    tier = "STUDENT" if (r == 0 and z.id == 3) else ("VIP" if r == 0 else "STANDARD")
+                    for c in range(1, z.grid_cols + 1):
+                        new_seats.append(
+                            Seat(
+                                zone_id=z.id,
+                                row_index=r,
+                                col_index=c - 1,
+                                row_code=row_code,
+                                seat_number=c,
+                                seat_code=f"{row_code}{c:02d}",
+                                is_disabled=False,
+                                seat_tier=tier
+                            )
+                        )
+                db.add_all(new_seats)
+                db.commit()
     finally:
         db.close()
     yield
@@ -508,7 +578,8 @@ def create_event(
     db.add(new_event)
     db.commit()
     db.refresh(new_event)
-    return format_event_response(new_event)
+    org_seq = db.query(Event).filter(Event.organizer_id == current_user.id, Event.id <= new_event.id).count()
+    return format_event_response(new_event, org_event_id=org_seq)
 
 
 @app.get("/api/v1/events/my-events", response_model=List[EventResponse], tags=["Events"])
@@ -527,8 +598,10 @@ def list_my_events(
     query = db.query(Event).options(joinedload(Event.category))
     if current_user.role == "ORGANIZER":
         query = query.filter(Event.organizer_id == current_user.id)
-    events = query.order_by(Event.id.desc()).all()
-    return [format_event_response(ev) for ev in events]
+    events_asc = query.order_by(Event.id.asc()).all()
+    seq_map = {ev.id: idx + 1 for idx, ev in enumerate(events_asc)}
+    events_desc = sorted(events_asc, key=lambda e: e.id, reverse=True)
+    return [format_event_response(ev, org_event_id=seq_map.get(ev.id, 1)) for ev in events_desc]
 
 
 @app.get("/api/v1/events/public", response_model=List[EventResponse], tags=["Events"])
@@ -579,7 +652,8 @@ def get_event_detail(event_id: int, db: Session = Depends(get_db)):
     if not event:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sự kiện")
 
-    base_resp = format_event_response(event)
+    earlier_count = db.query(Event).filter(Event.organizer_id == event.organizer_id, Event.id <= event.id).count()
+    base_resp = format_event_response(event, org_event_id=earlier_count)
     return EventDetailResponse(
         **base_resp.model_dump(),
         zones=[ZoneResponse.model_validate(z) for z in event.zones],
@@ -625,7 +699,79 @@ def update_event(
             organizer_email=current_user.email or "organizer@gmail.com"
         )
 
-    return format_event_response(event)
+    org_seq = db.query(Event).filter(Event.organizer_id == event.organizer_id, Event.id <= event.id).count()
+    return format_event_response(event, org_event_id=org_seq)
+
+
+def validate_event_ticket_coverage(event: Event, db: Session):
+    """
+    Ràng buộc kinh doanh Ban tổ chức:
+    Khi công bố hoặc mở bán sự kiện (PUBLISHED / ON_SALE):
+    1. Sự kiện phải có ít nhất 1 khu vực (Zone).
+    2. Mỗi khu vực phải có ít nhất 1 loại vé.
+    3. Đối với khu vực ghế ngồi (SEATED): Nếu khu vực có bao nhiêu phân loại chỗ ngồi
+       (ví dụ: ghế VIP, ghế Standard/Thường, ghế Student) thì Ban tổ chức phải tạo
+       tối thiểu bấy nhiêu loại vé tương ứng với từng phân loại chỗ ngồi đó (có thể nhiều hơn
+       như vé Early Bird, vé Sinh viên...).
+    4. Tổng số vé phát hành của khu vực có ghế phải tối thiểu đủ đáp ứng toàn bộ số ghế khả dụng.
+    """
+    zones = db.query(EventZone).filter(EventZone.event_id == event.id).all()
+    if not zones:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Không thể công bố sự kiện: Sự kiện chưa có khu vực tổ chức nào. Vui lòng tạo ít nhất 1 khu vực."
+        )
+
+    ticket_types = db.query(TicketType).filter(TicketType.event_id == event.id).all()
+
+    for zone in zones:
+        zone_tts = [tt for tt in ticket_types if tt.zone_id == zone.id]
+        if not zone_tts:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Không thể công bố sự kiện: Khu vực '{zone.name}' chưa có loại vé nào. Ban tổ chức phải tạo ít nhất 1 loại vé cho khu vực này."
+            )
+
+        if zone.zone_type == ZoneType.SEATED:
+            seats = db.query(Seat).filter(Seat.zone_id == zone.id).all()
+            active_seats = [s for s in seats if not s.is_disabled]
+            if not active_seats:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Khu vực ghế ngồi '{zone.name}' chưa có chỗ ngồi khả dụng nào (tất cả ghế đang bị khóa). Vui lòng thiết lập sơ đồ ghế."
+                )
+
+            # Phân loại các hạng ghế đang có trong sơ đồ
+            seat_tiers = set(s.seat_tier for s in active_seats if s.seat_tier)
+            tier_names_vi = {
+                "VIP": "Ghế VIP ⭐",
+                "STANDARD": "Ghế Thường",
+                "STUDENT": "Ghế Sinh viên"
+            }
+            formatted_tiers = [tier_names_vi.get(t, t) for t in sorted(seat_tiers)]
+
+            # Ràng buộc: Số loại vé tối thiểu phải bằng số phân loại chỗ ngồi đã tạo
+            if len(zone_tts) < len(seat_tiers):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Ràng buộc sơ đồ chỗ ngồi: Khu vực '{zone.name}' hiện có {len(seat_tiers)} phân loại chỗ ngồi "
+                        f"({', '.join(formatted_tiers)}). Ban tổ chức phải tạo tối thiểu {len(seat_tiers)} loại vé tương ứng "
+                        f"cho từng phân loại chỗ ngồi (hiện mới có {len(zone_tts)} loại vé). Bạn có thể tạo nhiều loại vé hơn "
+                        f"(như vé Early Bird, vé Sinh viên...)."
+                    )
+                )
+
+            # Kiểm tra tổng số lượng vé phát hành của các loại vé có đủ phủ số ghế khả dụng không
+            total_ticket_qty = sum(tt.total_quantity for tt in zone_tts)
+            if total_ticket_qty < len(active_seats):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Khu vực '{zone.name}' có {len(active_seats)} ghế ngồi khả dụng nhưng tổng số lượng vé phát hành "
+                        f"của các hạng vé chỉ có {total_ticket_qty} vé. Tổng số lượng vé tối thiểu phải bằng số ghế ({len(active_seats)} vé)."
+                    )
+                )
 
 
 @app.patch("/api/v1/events/{event_id}/status", response_model=EventResponse, tags=["Events"])
@@ -656,6 +802,11 @@ def update_event_status(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Sự kiện đã công bố không thể chuyển ngược về trạng thái Bản nháp."
         )
+
+    # RÀNG BUỘC KHI CÔNG BỐ / MỞ BÁN SỰ KIỆN:
+    if payload.status in (EventStatus.PUBLISHED, EventStatus.ON_SALE):
+        validate_event_ticket_coverage(event, db)
+
     event.status = payload.status
     db.commit()
     db.refresh(event)
@@ -669,7 +820,8 @@ def update_event_status(
             organizer_email=current_user.email or "organizer@gmail.com"
         )
 
-    return format_event_response(event)
+    org_seq = db.query(Event).filter(Event.organizer_id == event.organizer_id, Event.id <= event.id).count()
+    return format_event_response(event, org_event_id=org_seq)
 
 
 def verify_organizer_password_with_identity(email: str, password: str) -> bool:
@@ -805,7 +957,8 @@ def cancel_event_verified(
         organizer_email=organizer_email
     )
 
-    return format_event_response(event)
+    org_seq = db.query(Event).filter(Event.organizer_id == event.organizer_id, Event.id <= event.id).count()
+    return format_event_response(event, org_event_id=org_seq)
 
 
 @app.delete("/api/v1/events/{event_id}", tags=["Events"])
@@ -1085,6 +1238,22 @@ def create_ticket_type(
     if payload.is_student_only and not payload.student_email_domain:
         payload.student_email_domain = "@tdtu.edu.vn"
 
+    ev_start_naive = event.start_time.replace(tzinfo=None) if event.start_time else None
+    sale_start = payload.sale_start_time.replace(tzinfo=None) if payload.sale_start_time else datetime.now()
+    sale_end = payload.sale_end_time.replace(tzinfo=None) if payload.sale_end_time else ev_start_naive
+
+    if sale_start and sale_end:
+        if sale_end <= sale_start:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Thời gian kết thúc bán vé phải lớn hơn thời gian bắt đầu bán vé."
+            )
+        if ev_start_naive and sale_end > ev_start_naive:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Thời gian kết thúc bán vé phải trước hoặc bằng thời gian bắt đầu diễn ra sự kiện."
+            )
+
     new_tt = TicketType(
         event_id=event.id,
         zone_id=zone.id,
@@ -1093,7 +1262,9 @@ def create_ticket_type(
         total_quantity=payload.total_quantity,
         max_per_order=payload.max_per_order,
         is_student_only=payload.is_student_only,
-        student_email_domain=payload.student_email_domain
+        student_email_domain=payload.student_email_domain,
+        sale_start_time=sale_start,
+        sale_end_time=sale_end
     )
     db.add(new_tt)
     db.commit()
@@ -1132,6 +1303,82 @@ def create_ticket_type(
 
     db.refresh(new_tt)
     return format_ticket_type_response(new_tt)
+
+
+@app.put("/api/v1/ticket-types/{ticket_type_id}", response_model=TicketTypeResponse, tags=["Ticket Types & Pricing"])
+def update_ticket_type(
+    ticket_type_id: int,
+    payload: TicketTypeUpdateRequest,
+    current_user: TokenUser = Depends(require_roles(["ORGANIZER", "ADMIN"])),
+    db: Session = Depends(get_db)
+):
+    """Ban tổ chức chỉnh sửa thông tin hạng vé và thời gian bán vé trong Editor (khi sự kiện ở trạng thái Bản nháp)."""
+    tt = (
+        db.query(TicketType)
+        .options(joinedload(TicketType.pricing_rules), joinedload(TicketType.event))
+        .filter(TicketType.id == ticket_type_id)
+        .first()
+    )
+    if not tt:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy hạng vé")
+
+    event = get_owned_event_or_404(db, tt.event_id, current_user)
+    ensure_event_is_draft(event)
+
+    if payload.name is not None:
+        tt.name = payload.name.strip()
+    if payload.description is not None:
+        tt.description = payload.description
+    if payload.total_quantity is not None:
+        tt.total_quantity = payload.total_quantity
+    if payload.max_per_order is not None:
+        tt.max_per_order = payload.max_per_order
+    if payload.is_student_only is not None:
+        tt.is_student_only = payload.is_student_only
+    if payload.student_email_domain is not None:
+        tt.student_email_domain = payload.student_email_domain.strip() or None
+
+    new_sale_start = payload.sale_start_time.replace(tzinfo=None) if payload.sale_start_time else (tt.sale_start_time.replace(tzinfo=None) if tt.sale_start_time else None)
+    new_sale_end = payload.sale_end_time.replace(tzinfo=None) if payload.sale_end_time else (tt.sale_end_time.replace(tzinfo=None) if tt.sale_end_time else None)
+    ev_start_naive = event.start_time.replace(tzinfo=None) if event.start_time else None
+
+    if new_sale_start and new_sale_end:
+        if new_sale_end <= new_sale_start:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Thời gian kết thúc bán vé phải lớn hơn thời gian bắt đầu bán vé."
+            )
+        if ev_start_naive and new_sale_end > ev_start_naive:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Thời gian kết thúc bán vé phải trước hoặc bằng thời gian bắt đầu diễn ra sự kiện."
+            )
+
+    if payload.sale_start_time is not None:
+        tt.sale_start_time = new_sale_start
+    if payload.sale_end_time is not None:
+        tt.sale_end_time = new_sale_end
+
+    if payload.base_price is not None:
+        regular_rules = [r for r in (tt.pricing_rules or []) if "regular" in r.rule_name.lower() or "thường" in r.rule_name.lower()]
+        if regular_rules:
+            regular_rules[0].price = payload.base_price
+        elif tt.pricing_rules:
+            tt.pricing_rules[0].price = payload.base_price
+        else:
+            db.add(
+                TicketPricingRule(
+                    ticket_type_id=tt.id,
+                    rule_name="Regular",
+                    price=payload.base_price,
+                    start_time=datetime.utcnow() - timedelta(days=1),
+                    end_time=event.end_time
+                )
+            )
+
+    db.commit()
+    db.refresh(tt)
+    return format_ticket_type_response(tt)
 
 
 @app.post("/api/v1/ticket-types/{ticket_type_id}/pricing-rules", response_model=PricingRuleResponse, status_code=status.HTTP_201_CREATED, tags=["Ticket Types & Pricing"])
@@ -1232,6 +1479,24 @@ def validate_ticket_purchase(
     )
     if not tt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy loại vé trong sự kiện này")
+
+    check_time = (payload.at_time or datetime.now()).replace(tzinfo=None)
+    if tt.sale_start_time and check_time < tt.sale_start_time.replace(tzinfo=None):
+        return PurchaseValidationResponse(
+            allowed=False,
+            ticket_type_id=tt.id,
+            ticket_type_name=tt.name,
+            quantity=payload.quantity,
+            reason=f"Loại vé '{tt.name}' chưa đến thời gian mở bán (Mở bán từ: {tt.sale_start_time.strftime('%H:%M %d/%m/%Y')})."
+        )
+    if tt.sale_end_time and check_time > tt.sale_end_time.replace(tzinfo=None):
+        return PurchaseValidationResponse(
+            allowed=False,
+            ticket_type_id=tt.id,
+            ticket_type_name=tt.name,
+            quantity=payload.quantity,
+            reason=f"Loại vé '{tt.name}' đã hết thời gian bán vé (Đóng bán lúc: {tt.sale_end_time.strftime('%H:%M %d/%m/%Y')})."
+        )
 
     if payload.quantity > tt.max_per_order:
         return PurchaseValidationResponse(

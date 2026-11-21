@@ -1,3 +1,15 @@
+import sys
+if sys.platform == "win32":
+    import asyncio
+    from asyncio.selector_events import BaseSelectorEventLoop
+    _orig_read_from_self = BaseSelectorEventLoop._read_from_self
+    def _read_from_self_patched(self):
+        try:
+            _orig_read_from_self(self)
+        except (ConnectionResetError, OSError):
+            pass
+    BaseSelectorEventLoop._read_from_self = _read_from_self_patched
+
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional

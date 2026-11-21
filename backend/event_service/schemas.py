@@ -18,6 +18,8 @@ class CategoryResponse(BaseModel):
     id: int
     name: str
     slug: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 # ==================== SEAT & ZONE SCHEMAS (GRID MAP EDITOR) ====================
@@ -66,6 +68,7 @@ class ZoneResponse(BaseModel):
     grid_rows: Optional[int] = None
     grid_cols: Optional[int] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class ZoneWithSeatsResponse(ZoneResponse):
@@ -90,6 +93,8 @@ class PricingRuleResponse(BaseModel):
     price: float
     start_time: datetime
     end_time: datetime
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class TicketTypeCreateRequest(BaseModel):
@@ -100,8 +105,22 @@ class TicketTypeCreateRequest(BaseModel):
     max_per_order: int = Field(default=4, ge=1, le=20, examples=[4], description="Tối đa số vé mỗi đơn (mặc định 4)")
     is_student_only: bool = Field(default=False, description="Ràng buộc email trường học")
     student_email_domain: Optional[str] = Field(None, examples=["@tdtu.edu.vn"])
+    sale_start_time: Optional[datetime] = Field(None, description="Thời gian bắt đầu bán vé")
+    sale_end_time: Optional[datetime] = Field(None, description="Thời gian kết thúc bán vé (mặc định là trước thời gian diễn ra sự kiện)")
     base_price: Optional[Decimal] = Field(None, ge=0, examples=[300000], description="Giá vé mặc định nếu tạo nhanh")
     pricing_rules: Optional[List[PricingRuleCreateRequest]] = Field(default=None, description="Danh sách quy tắc giá theo thời gian")
+
+
+class TicketTypeUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=100)
+    description: Optional[str] = Field(None, max_length=255)
+    total_quantity: Optional[int] = Field(None, ge=1)
+    max_per_order: Optional[int] = Field(None, ge=1, le=20)
+    is_student_only: Optional[bool] = None
+    student_email_domain: Optional[str] = None
+    sale_start_time: Optional[datetime] = None
+    sale_end_time: Optional[datetime] = None
+    base_price: Optional[Decimal] = Field(None, ge=0)
 
 
 class TicketTypeResponse(BaseModel):
@@ -116,10 +135,13 @@ class TicketTypeResponse(BaseModel):
     max_per_order: int
     is_student_only: bool
     student_email_domain: Optional[str] = None
+    sale_start_time: Optional[datetime] = None
+    sale_end_time: Optional[datetime] = None
     current_price: Optional[float] = None
     active_rule_name: Optional[str] = None
     pricing_rules: List[PricingRuleResponse] = []
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 # ==================== EVENT SCHEMAS ====================
@@ -167,6 +189,7 @@ class EventResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    org_event_id: Optional[int] = None
     organizer_id: int
     category_id: int
     category_name: Optional[str] = None

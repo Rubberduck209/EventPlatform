@@ -1,6 +1,7 @@
 const IDENTITY_BASE_URL = 'http://localhost:8001/api/v1';
 const EVENT_BASE_URL = 'http://localhost:8002/api/v1';
 const PAYMENT_BASE_URL = 'http://localhost:8004/api/v1';
+const BOOKING_BASE_URL = 'http://localhost:8003';
 
 export const getStoredToken = () => localStorage.getItem('token');
 export const setStoredToken = (token) => localStorage.setItem('token', token);
@@ -39,6 +40,7 @@ async function requestUrl(baseUrl, endpoint, options = {}) {
 const requestIdentity = (endpoint, options = {}) => requestUrl(IDENTITY_BASE_URL, endpoint, options);
 const requestEvent = (endpoint, options = {}) => requestUrl(EVENT_BASE_URL, endpoint, options);
 const requestPayment = (endpoint, options = {}) => requestUrl(PAYMENT_BASE_URL, endpoint, options);
+const requestBooking = (endpoint, options = {}) => requestUrl(BOOKING_BASE_URL, endpoint, options);
 
 export const api = {
   // Auth (Identity Service - Port 8001)
@@ -102,6 +104,10 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(payload)
   }),
+  updateTicketType: (ticketTypeId, payload) => requestEvent(`/ticket-types/${ticketTypeId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  }),
   deleteTicketType: (ticketTypeId) => requestEvent(`/ticket-types/${ticketTypeId}`, { method: 'DELETE' }),
   addPricingRule: (ticketTypeId, payload) => requestEvent(`/ticket-types/${ticketTypeId}/pricing-rules`, {
     method: 'POST',
@@ -129,5 +135,21 @@ export const api = {
   refundPaymentsByEvent: (eventId, reason) => requestPayment(`/payments/refund-by-event/${eventId}`, {
     method: 'POST',
     body: JSON.stringify({ reason })
+  }),
+
+  // Booking Service (Port 8003 - Hold vé 10 phút, Quản lý kho vé & Trạng thái ghế)
+  holdBooking: (payload) => requestBooking('/bookings/hold', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  }),
+  getEventSeatStatus: (eventId) => requestBooking(`/bookings/events/${eventId}/seat-status`),
+  getStandingAvailability: (eventId) => requestBooking(`/bookings/events/${eventId}/standing-availability`),
+  cancelBooking: (bookingId, userId) => requestBooking(`/bookings/${bookingId}/cancel?user_id=${userId}`, {
+    method: 'POST'
+  }),
+  getBookingDetail: (bookingId) => requestBooking(`/bookings/${bookingId}`),
+  getUserBookings: (userId) => requestBooking(`/bookings/user/${userId}`),
+  releaseExpiredBookings: () => requestBooking('/bookings/release-expired', {
+    method: 'POST'
   }),
 };

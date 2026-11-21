@@ -35,6 +35,7 @@ class UserResponse(BaseModel):
     auth_provider: str
     avatar_url: Optional[str] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class TokenResponse(BaseModel):
@@ -68,6 +69,7 @@ class OrganizerProfileResponse(BaseModel):
     approved_by_admin_id: Optional[int] = None
     approved_at: Optional[datetime] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 # ==================== EVENT STAFF SCHEMAS ====================

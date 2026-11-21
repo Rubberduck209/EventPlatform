@@ -1,6 +1,8 @@
 import hashlib
 import hmac
 import os
+import re
+import unicodedata
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -8,6 +10,23 @@ from dotenv import load_dotenv
 
 # Múi giờ Việt Nam (GMT+7) theo chuẩn bắt buộc của cổng VNPay
 VN_TZ = timezone(timedelta(hours=7))
+
+
+def clean_vnpay_order_info(text: str) -> str:
+    """
+    Chuẩn hóa nội dung đơn hàng (vnp_OrderInfo) theo chuẩn bắt buộc của VNPay:
+    - Bỏ dấu tiếng Việt (đ -> d, é -> e, ...)
+    - Loại bỏ ký tự đặc biệt (#, (, ), [, ], /, ...)
+    - Rút gọn khoảng trắng, giới hạn tối đa 250 ký tự
+    Tránh tuyệt đối lỗi 'Thông báo: Sai chữ ký' do lệch URL-encoding khi cổng VNPay kiểm tra chữ ký.
+    """
+    if not text:
+        return "Thanh toan don dat ve"
+    text = text.replace("đ", "d").replace("Đ", "D")
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^a-zA-Z0-9\s\-]", " ", text)
+    text = " ".join(text.split())
+    return text[:250] or "Thanh toan don dat ve"
 
 
 def get_vnpay_config() -> Dict[str, str]:
@@ -58,6 +77,8 @@ def build_vnpay_payment_url(
     if not client_ip or client_ip == "::1":
         client_ip = "127.0.0.1"
 
+    safe_order_info = clean_vnpay_order_info(order_desc or f"Thanh toan don dat ve {payment_code}")
+
     vnp_params: Dict[str, Any] = {
         "vnp_Version": "2.1.0",
         "vnp_Command": "pay",
@@ -65,7 +86,7 @@ def build_vnpay_payment_url(
         "vnp_Amount": int(round(float(amount_vnd) * 100)),
         "vnp_CurrCode": "VND",
         "vnp_TxnRef": payment_code,
-        "vnp_OrderInfo": order_desc or f"Thanh toan don dat ve {payment_code}",
+        "vnp_OrderInfo": safe_order_info,
         "vnp_OrderType": "other",
         "vnp_Locale": locale or "vn",
         "vnp_ReturnUrl": cfg["return_url"],

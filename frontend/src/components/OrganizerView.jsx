@@ -2,15 +2,38 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../api';
 import ToastNotification from './ToastNotification';
 
-const STATUS_OPTIONS = [
-  { value: 'DRAFT', label: 'Bản nháp' },
-  { value: 'PUBLISHED', label: 'Đã công bố' },
-  { value: 'ON_SALE', label: 'Đang mở bán' },
-  { value: 'HAPPENING', label: 'Đang diễn ra' },
-  { value: 'COMPLETED', label: 'Đã kết thúc' },
-];
-
 const cleanName = (val) => (val ? String(val).replace(/\s*\([^)]*\)/g, '').trim() : '');
+
+const toLocalInputDateTime = (dtValue) => {
+  if (!dtValue) return '';
+  const d = new Date(dtValue);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+// Nhãn trạng thái chỉ đọc theo đúng trình tự vòng đời sự kiện:
+// Bản nháp -> (nhấn Publish) -> Công bố -> (tới giờ) -> Đang diễn ra -> (qua giờ) -> Đã kết thúc | (hủy xong) -> Đang hủy
+const getEventStatusBadge = (ev) => {
+  if (!ev) return { key: 'DRAFT', label: 'Bản nháp', bg: '#f1f5f9', color: '#475569', border: '#cbd5e1' };
+  if (ev.status === 'CANCELLED') {
+    return { key: 'CANCELLED', label: 'Đang hủy', bg: '#fef2f2', color: '#dc2626', border: '#fecaca' };
+  }
+  if (ev.status === 'DRAFT') {
+    return { key: 'DRAFT', label: 'Bản nháp', bg: '#f1f5f9', color: '#475569', border: '#cbd5e1' };
+  }
+  const now = Date.now();
+  const startMs = ev.start_time ? new Date(ev.start_time).getTime() : 0;
+  const endMs = ev.end_time ? new Date(ev.end_time).getTime() : 0;
+
+  if (ev.status === 'COMPLETED' || (endMs && now > endMs)) {
+    return { key: 'COMPLETED', label: 'Đã kết thúc', bg: '#f3f4f6', color: '#374151', border: '#d1d5db' };
+  }
+  if (ev.status === 'HAPPENING' || (startMs && endMs && now >= startMs && now <= endMs)) {
+    return { key: 'HAPPENING', label: 'Đang diễn ra', bg: '#fffbeb', color: '#d97706', border: '#fde68a' };
+  }
+  return { key: 'PUBLISHED', label: 'Công bố', bg: '#dcfce7', color: '#15803d', border: '#bbf7d0' };
+};
 
 export default function OrganizerView({ user, onLogout }) {
   const [section, setSection] = useState('events'); // 'events' | 'config' | 'staff'
@@ -18,6 +41,23 @@ export default function OrganizerView({ user, onLogout }) {
   const [configTab, setConfigTab] = useState('zones'); // 'zones' | 'tickets'
   const [staffTab, setStaffTab] = useState('list'); // 'list' | 'assign'
   const [showCreateEventForm, setShowCreateEventForm] = useState(false);
+  const [eventSearchQuery, setEventSearchQuery] = useState('');
+  const [eventCategoryFilter, setEventCategoryFilter] = useState('');
+  const [, setClockTick] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => setClockTick((t) => t + 1), 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Lấy số thứ tự ID riêng biệt cho từng tổ chức (tự động reset về #1 cho mỗi ban tổ chức)
+  const getEventSeq = (ev) => {
+    if (!ev) return '';
+    if (ev.org_event_id) return ev.org_event_id;
+    const sorted = [...myEvents].sort((a, b) => a.id - b.id);
+    const idx = sorted.findIndex((item) => item.id === ev.id);
+    return idx >= 0 ? idx + 1 : ev.id;
+  };
 
   // State cho Modal Xác thực Hủy Sự kiện Bảo mật 3 Lớp
   const [cancelModalEvent, setCancelModalEvent] = useState(null);
@@ -71,6 +111,9 @@ export default function OrganizerView({ user, onLogout }) {
   const [ttMaxPerOrder, setTtMaxPerOrder] = useState(4);
   const [ttStudentDomain, setTtStudentDomain] = useState('');
   const [ttTotalQty, setTtTotalQty] = useState(50);
+  const [ttSaleStartTime, setTtSaleStartTime] = useState('');
+  const [ttSaleEndTime, setTtSaleEndTime] = useState('');
+  const [editingTicketType, setEditingTicketType] = useState(null);
   const [enableEarlyBird, setEnableEarlyBird] = useState(false);
   const [ruleName, setRuleName] = useState('Early Bird');
   const [ruleDiscountPrice, setRuleDiscountPrice] = useState('');
@@ -137,6 +180,9 @@ export default function OrganizerView({ user, onLogout }) {
       const zones = seatMapResp?.zones || [];
       setSeatMapZones(zones);
       setPendingZoneEdits({});
+      setEditingTicketType(null);
+      setTtSaleStartTime(toLocalInputDateTime(new Date()));
+      setTtSaleEndTime(detail?.start_time ? toLocalInputDateTime(detail.start_time) : '');
       if (zones.length > 0 && !ttZoneId) {
         setTtZoneId(zones[0].id);
       }
@@ -220,6 +266,46 @@ export default function OrganizerView({ user, onLogout }) {
 
   const handleStatusChange = async (eventId, newStatus) => {
     setMsg({ text: '', type: '' });
+
+    // Ràng buộc phía Client: Kiểm tra số loại vé tối thiểu tương ứng với từng phân loại chỗ ngồi
+    if (newStatus === 'PUBLISHED' || newStatus === 'ON_SALE') {
+      const targetDetail = Number(selectedEventId) === Number(eventId) ? selectedEventDetail : null;
+      if (targetDetail) {
+        const zones = seatMapZones || [];
+        const ticketTypes = targetDetail.ticket_types || [];
+        if (zones.length === 0) {
+          setMsg({ text: 'Sự kiện chưa có khu vực tổ chức nào. Vui lòng tạo ít nhất 1 khu vực trước khi công bố!', type: 'error' });
+          return;
+        }
+        for (const z of zones) {
+          const zTts = ticketTypes.filter((tt) => tt.zone_id === z.id);
+          if (zTts.length === 0) {
+            setMsg({ text: `Khu vực "${cleanName(z.name)}" chưa có loại vé nào. Bạn phải tạo ít nhất 1 loại vé cho khu vực này!`, type: 'error' });
+            return;
+          }
+          if (z.zone_type === 'SEATED') {
+            const activeSeats = (z.seats || []).filter((s) => !s.is_disabled);
+            const distinctTiers = Array.from(new Set(activeSeats.map((s) => s.seat_tier || 'STANDARD')));
+            if (zTts.length < distinctTiers.length) {
+              setMsg({
+                text: `Ràng buộc sơ đồ chỗ ngồi: Khu vực "${cleanName(z.name)}" có ${distinctTiers.length} phân loại chỗ ngồi (${distinctTiers.join(', ')}). Ban tổ chức phải tạo tối thiểu ${distinctTiers.length} loại vé tương ứng cho từng phân loại chỗ ngồi (hiện mới có ${zTts.length} loại vé).`,
+                type: 'error'
+              });
+              return;
+            }
+            const totalQty = zTts.reduce((acc, curr) => acc + (curr.total_quantity || 0), 0);
+            if (totalQty < activeSeats.length) {
+              setMsg({
+                text: `Khu vực "${cleanName(z.name)}" có ${activeSeats.length} ghế ngồi khả dụng nhưng các hạng vé chỉ phát hành ${totalQty} vé. Tổng số lượng vé tối thiểu phải bằng số ghế (${activeSeats.length} vé)!`,
+                type: 'error'
+              });
+              return;
+            }
+          }
+        }
+      }
+    }
+
     try {
       await api.updateEventStatus(eventId, newStatus);
       setMsg({ text: `Đã cập nhật trạng thái sự kiện #${eventId}.`, type: 'success' });
@@ -540,38 +626,98 @@ export default function OrganizerView({ user, onLogout }) {
     }
   };
 
-  // Ticket Type & Dynamic Pricing Handler
+  // Ticket Type & Dynamic Pricing Handler (Tạo mới & Chỉnh sửa trong Editor)
+  const handleStartEditTicketType = (tt) => {
+    setEditingTicketType(tt);
+    setTtZoneId(tt.zone_id);
+    setTtName(cleanName(tt.name));
+    setTtBasePrice(tt.current_price != null ? tt.current_price : '');
+    setTtTotalQty(tt.total_quantity);
+    setTtMaxPerOrder(tt.max_per_order || 4);
+    setTtStudentDomain(tt.student_email_domain || '');
+    setTtSaleStartTime(toLocalInputDateTime(tt.sale_start_time || tt.created_at || new Date()));
+    setTtSaleEndTime(toLocalInputDateTime(tt.sale_end_time || selectedEventDetail?.start_time));
+  };
+
+  const handleCancelEditTicketType = () => {
+    setEditingTicketType(null);
+    setTtName('');
+    setTtBasePrice('');
+    setTtStudentDomain('');
+    setTtSaleStartTime(toLocalInputDateTime(new Date()));
+    setTtSaleEndTime(selectedEventDetail?.start_time ? toLocalInputDateTime(selectedEventDetail.start_time) : '');
+  };
+
   const handleCreateTicketType = async (e) => {
     e.preventDefault();
     if (!selectedEventId || !ttZoneId) return;
+
+    const saleStartObj = ttSaleStartTime ? new Date(ttSaleStartTime) : new Date();
+    const saleEndObj = ttSaleEndTime
+      ? new Date(ttSaleEndTime)
+      : selectedEventDetail?.start_time
+      ? new Date(selectedEventDetail.start_time)
+      : null;
+
+    if (saleEndObj && saleEndObj <= saleStartObj) {
+      setMsg({ text: 'Thời gian kết thúc bán vé phải lớn hơn thời gian bắt đầu bán vé!', type: 'error' });
+      return;
+    }
+    if (saleEndObj && selectedEventDetail?.start_time && saleEndObj > new Date(selectedEventDetail.start_time)) {
+      setMsg({ text: 'Thời gian kết thúc bán vé phải trước hoặc bằng thời gian diễn ra sự kiện!', type: 'error' });
+      return;
+    }
+
     setTtLoading(true);
     setMsg({ text: '', type: '' });
     try {
-      const pricingRules = [];
-      if (enableEarlyBird && ruleName.trim() && ruleDiscountPrice && ruleStartDate && ruleEndDate) {
-        pricingRules.push({
-          rule_name: ruleName.trim(),
-          price: Number(ruleDiscountPrice),
-          start_time: new Date(ruleStartDate).toISOString(),
-          end_time: new Date(ruleEndDate).toISOString()
+      const studentDomainClean = ttStudentDomain.trim();
+
+      if (editingTicketType) {
+        const updated = await api.updateTicketType(editingTicketType.id, {
+          name: ttName.trim(),
+          base_price: Number(ttBasePrice),
+          max_per_order: Number(ttMaxPerOrder),
+          is_student_only: Boolean(studentDomainClean),
+          student_email_domain: studentDomainClean || '',
+          total_quantity: Number(ttTotalQty),
+          sale_start_time: saleStartObj.toISOString(),
+          sale_end_time: saleEndObj ? saleEndObj.toISOString() : null
+        });
+        setMsg({
+          text: `Đã cập nhật hạng vé "${updated.name}".`,
+          type: 'success'
+        });
+        setEditingTicketType(null);
+      } else {
+        const pricingRules = [];
+        if (enableEarlyBird && ruleName.trim() && ruleDiscountPrice && ruleStartDate && ruleEndDate) {
+          pricingRules.push({
+            rule_name: ruleName.trim(),
+            price: Number(ruleDiscountPrice),
+            start_time: new Date(ruleStartDate).toISOString(),
+            end_time: new Date(ruleEndDate).toISOString()
+          });
+        }
+
+        const created = await api.createTicketType(selectedEventId, {
+          zone_id: Number(ttZoneId),
+          name: ttName.trim(),
+          base_price: Number(ttBasePrice),
+          max_per_order: Number(ttMaxPerOrder),
+          is_student_only: Boolean(studentDomainClean),
+          student_email_domain: studentDomainClean || null,
+          total_quantity: Number(ttTotalQty),
+          sale_start_time: saleStartObj.toISOString(),
+          sale_end_time: saleEndObj ? saleEndObj.toISOString() : null,
+          pricing_rules: pricingRules.length > 0 ? pricingRules : null
+        });
+        setMsg({
+          text: `Đã lưu hạng vé "${created.name}".`,
+          type: 'success'
         });
       }
 
-      const studentDomainClean = ttStudentDomain.trim();
-      const created = await api.createTicketType(selectedEventId, {
-        zone_id: Number(ttZoneId),
-        name: ttName.trim(),
-        base_price: Number(ttBasePrice),
-        max_per_order: Number(ttMaxPerOrder),
-        is_student_only: Boolean(studentDomainClean),
-        student_email_domain: studentDomainClean || null,
-        total_quantity: Number(ttTotalQty),
-        pricing_rules: pricingRules.length > 0 ? pricingRules : null
-      });
-      setMsg({
-        text: `Đã lưu hạng vé "${created.name}".`,
-        type: 'success'
-      });
       setTtName('');
       setTtBasePrice('');
       setRuleDiscountPrice('');
@@ -698,6 +844,21 @@ export default function OrganizerView({ user, onLogout }) {
   const orgDisplayName = cleanName(orgProfile?.organization_name || user.full_name);
 
   const activeEvents = myEvents.filter((ev) => ev.status !== 'CANCELLED');
+  const filteredActiveEvents = myEvents.filter((ev) => {
+    if (eventCategoryFilter && String(ev.category_id) !== String(eventCategoryFilter)) {
+      return false;
+    }
+    if (eventSearchQuery.trim()) {
+      const q = eventSearchQuery.toLowerCase().trim();
+      const matchTitle = ev.title?.toLowerCase().includes(q);
+      const matchVenue = ev.venue_name?.toLowerCase().includes(q) || ev.venue_address?.toLowerCase().includes(q);
+      const matchCat = ev.category_name?.toLowerCase().includes(q);
+      const matchSeq = String(getEventSeq(ev)).includes(q);
+      return matchTitle || matchVenue || matchCat || matchSeq;
+    }
+    return true;
+  });
+
   const nowDate = new Date();
   const currentMonthLabel = `${String(nowDate.getMonth() + 1).padStart(2, '0')}/${nowDate.getFullYear()}`;
   const cancelledEventsThisMonth = myEvents.filter((ev) => {
@@ -713,42 +874,91 @@ export default function OrganizerView({ user, onLogout }) {
     <div className="layout-organizer" style={{ minHeight: '100vh' }}>
       <aside className="organizer-aside">
         <div>
-          <div style={{ padding: '0 0.5rem 1.25rem', borderBottom: '1px solid var(--border)', marginBottom: '1.25rem' }}>
-            <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--accent-blue)', letterSpacing: '0.04em' }}>
-              EVENTHUB STUDIO
+          {/* Logo & Thẻ định danh Ban tổ chức */}
+          <div style={{ padding: '0 0.25rem 1.25rem', borderBottom: '1px solid var(--border)', marginBottom: '1.25rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.85rem' }}>
+              <div style={{ width: 34, height: 34, borderRadius: 8, background: 'linear-gradient(135deg, #2563eb, #1d4ed8)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '1.15rem', boxShadow: '0 2px 6px rgba(37,99,235,0.3)' }}>
+                🎟️
+              </div>
+              <div>
+                <div style={{ fontSize: '0.82rem', fontWeight: 800, color: '#1e293b', letterSpacing: '0.04em' }}>
+                  EVENTHUB STUDIO
+                </div>
+                <div style={{ fontSize: '0.68rem', color: '#2563eb', fontWeight: 600 }}>
+                  ORGANIZER WORKBENCH
+                </div>
+              </div>
             </div>
-            <div style={{ fontSize: '0.98rem', fontWeight: 700, marginTop: '0.2rem' }}>
-              {orgDisplayName}
+
+            {/* Thẻ định danh Tổ chức (Organization Identity Card) */}
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '0.65rem 0.8rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                <span style={{ fontSize: '0.68rem', color: '#64748b', textTransform: 'uppercase', fontWeight: 700 }}>
+                  🏢 Ban tổ chức
+                </span>
+                <span style={{ fontSize: '0.65rem', background: '#dcfce7', color: '#15803d', padding: '0.1rem 0.4rem', borderRadius: 4, fontWeight: 700 }}>
+                  Đang hoạt động
+                </span>
+              </div>
+              <div style={{ fontSize: '0.98rem', fontWeight: 800, color: '#0f172a' }}>
+                {orgDisplayName}
+              </div>
+              <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: 2 }}>
+                ID Tổ chức: #{user.id ? `ORG-${String(user.id).padStart(3, '0')}` : 'ORG-001'}
+              </div>
             </div>
           </div>
 
+          <div style={{ fontSize: '0.68rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '0 0.5rem 0.4rem' }}>
+            Menu Quản lý
+          </div>
           <button
             type="button"
             className={`organizer-menu-btn ${section === 'events' ? 'active' : ''}`}
             onClick={() => setSection('events')}
           >
-            Sự kiện
+            <span style={{ fontSize: '1.1rem' }}>📅</span>
+            <span>Quản lý Sự kiện</span>
           </button>
           <button
             type="button"
             className={`organizer-menu-btn ${section === 'config' ? 'active' : ''}`}
             onClick={() => setSection('config')}
           >
-            Sơ đồ ghế & Giá vé
+            <span style={{ fontSize: '1.1rem' }}>🗺️</span>
+            <span>Sơ đồ ghế & Giá vé</span>
           </button>
           <button
             type="button"
             className={`organizer-menu-btn ${section === 'staff' ? 'active' : ''}`}
             onClick={() => setSection('staff')}
           >
-            Nhân sự
+            <span style={{ fontSize: '1.1rem' }}>👥</span>
+            <span>Nhân sự & Soát vé</span>
           </button>
         </div>
 
-        <div style={{ padding: '0.9rem', background: 'var(--bg-page)', borderRadius: 8, border: '1px solid var(--border)', fontSize: '0.8rem' }}>
-          <div style={{ fontWeight: 600 }}>{cleanName(user.full_name)}</div>
-          <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.6rem' }}>{user.email}</div>
-          <button type="button" className="btn btn-outline" onClick={onLogout} style={{ width: '100%', padding: '0.35rem', fontSize: '0.76rem' }}>
+        {/* User Profile Card */}
+        <div style={{ padding: '0.85rem', background: '#f8fafc', borderRadius: 10, border: '1px solid #e2e8f0', fontSize: '0.8rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', marginBottom: '0.65rem' }}>
+            <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#dbeafe', color: '#1d4ed8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '0.85rem' }}>
+              {(cleanName(user.full_name) || user.email || 'O')[0].toUpperCase()}
+            </div>
+            <div style={{ overflow: 'hidden' }}>
+              <div style={{ fontWeight: 700, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+                {cleanName(user.full_name)}
+              </div>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+                {user.email}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-outline"
+            onClick={onLogout}
+            style={{ width: '100%', padding: '0.35rem', fontSize: '0.76rem', color: '#dc2626', borderColor: '#fca5a5' }}
+          >
             Đăng xuất
           </button>
         </div>
@@ -759,43 +969,121 @@ export default function OrganizerView({ user, onLogout }) {
 
         {/* ==================== MỤC 1: DANH SÁCH SỰ KIỆN ==================== */}
         {section === 'events' && (
-          <div className="card">
-            <div className="card-header" style={{ flexWrap: 'wrap', gap: '0.75rem' }}>
-              <div>
-                <span className="card-title" style={{ fontSize: '1.1rem' }}>Quản lý Sự kiện</span>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                  Sự kiện chưa công bố có thể xóa trực tiếp; sự kiện đã công bố khi hủy cần xác thực bảo mật 3 lớp
-                </p>
-              </div>
-              <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', gap: '0.35rem', background: 'var(--bg-page)', padding: 4, borderRadius: 8, border: '1px solid var(--border)' }}>
-                  <button
-                    type="button"
-                    className={`portal-switch-btn ${eventsTab === 'active' ? 'active' : ''}`}
-                    onClick={() => setEventsTab('active')}
-                  >
-                    Sự kiện đang hoạt động • {activeEvents.length}
-                  </button>
-                  <button
-                    type="button"
-                    className={`portal-switch-btn ${eventsTab === 'cancelled' ? 'active' : ''}`}
-                    onClick={() => setEventsTab('cancelled')}
-                  >
-                    Sự kiện đã bị hủy trong tháng {currentMonthLabel} • {cancelledEventsThisMonth.length}
-                  </button>
+          <div>
+            {/* KPI Overview Cards */}
+            <div className="org-kpi-grid">
+              <div className="org-kpi-card">
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Tổng sự kiện
+                  </div>
+                  <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#0f172a', marginTop: '0.15rem' }}>
+                    {myEvents.length}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: '#2563eb', fontWeight: 600, marginTop: 2 }}>
+                    Mã #1 - #{myEvents.length || 1}
+                  </div>
                 </div>
+                <div style={{ width: 46, height: 46, borderRadius: 12, background: '#eff6ff', color: '#2563eb', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem', boxShadow: '0 2px 5px rgba(37,99,235,0.12)' }}>
+                  🎪
+                </div>
+              </div>
 
-                {eventsTab === 'active' && (
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => setShowCreateEventForm(!showCreateEventForm)}
-                  >
-                    {showCreateEventForm ? 'Đóng biểu mẫu' : '+ Tạo sự kiện mới'}
-                  </button>
-                )}
+              <div className="org-kpi-card">
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Đang hoạt động
+                  </div>
+                  <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#16a34a', marginTop: '0.15rem' }}>
+                    {activeEvents.length}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: '#16a34a', fontWeight: 600, marginTop: 2 }}>
+                    Đang diễn ra
+                  </div>
+                </div>
+                <div style={{ width: 46, height: 46, borderRadius: 12, background: '#dcfce7', color: '#16a34a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem', boxShadow: '0 2px 5px rgba(22,163,74,0.12)' }}>
+                  🟢
+                </div>
+              </div>
+
+              <div className="org-kpi-card">
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Bản nháp
+                  </div>
+                  <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#475569', marginTop: '0.15rem' }}>
+                    {activeEvents.filter(e => e.status === 'DRAFT').length}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 600, marginTop: 2 }}>
+                    Chưa công bố
+                  </div>
+                </div>
+                <div style={{ width: 46, height: 46, borderRadius: 12, background: '#f1f5f9', color: '#475569', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem' }}>
+                  📝
+                </div>
+              </div>
+
+              <div className="org-kpi-card">
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Đang mở bán
+                  </div>
+                  <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#2563eb', marginTop: '0.15rem' }}>
+                    {activeEvents.filter(e => e.status === 'ON_SALE').length}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: '#2563eb', fontWeight: 600, marginTop: 2 }}>
+                    Khách có thể mua
+                  </div>
+                </div>
+                <div style={{ width: 46, height: 46, borderRadius: 12, background: '#dbeafe', color: '#2563eb', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem', boxShadow: '0 2px 5px rgba(37,99,235,0.12)' }}>
+                  🎟️
+                </div>
               </div>
             </div>
+
+            <div className="card">
+              <div className="card-header" style={{ flexWrap: 'wrap', gap: '0.75rem' }}>
+                <div>
+                  <span className="card-title" style={{ fontSize: '1.15rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <span>Quản lý Sự kiện</span>
+                    <span style={{ fontSize: '0.74rem', background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', padding: '0.15rem 0.55rem', borderRadius: 999, fontWeight: 700 }}>
+                      🏢 {orgDisplayName}
+                    </span>
+                  </span>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                    Danh sách sự kiện của tổ chức
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: '0.35rem', background: 'var(--bg-page)', padding: 4, borderRadius: 8, border: '1px solid var(--border)' }}>
+                    <button
+                      type="button"
+                      className={`portal-switch-btn ${eventsTab === 'active' ? 'active' : ''}`}
+                      onClick={() => setEventsTab('active')}
+                    >
+                      Đang hoạt động ({activeEvents.length})
+                    </button>
+                    <button
+                      type="button"
+                      className={`portal-switch-btn ${eventsTab === 'cancelled' ? 'active' : ''}`}
+                      onClick={() => setEventsTab('cancelled')}
+                    >
+                      Đã hủy ({cancelledEventsThisMonth.length})
+                    </button>
+                  </div>
+
+                  {eventsTab === 'active' && (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => setShowCreateEventForm(!showCreateEventForm)}
+                      style={{ boxShadow: '0 2px 8px rgba(37,99,235,0.25)', fontWeight: 700 }}
+                    >
+                      {showCreateEventForm ? 'Đóng' : '+ Tạo sự kiện'}
+                    </button>
+                  )}
+                </div>
+              </div>
 
             {eventsTab === 'active' && showCreateEventForm && (
               <form
@@ -896,7 +1184,7 @@ export default function OrganizerView({ user, onLogout }) {
                     <input
                       type="text"
                       className="form-input"
-                      placeholder="Hoàn tiền 100% trước 7 ngày"
+                      placeholder="VD: Trước 7 ngày"
                       value={evRefundPolicy}
                       onChange={(e) => setEvRefundPolicy(e.target.value)}
                     />
@@ -915,52 +1203,91 @@ export default function OrganizerView({ user, onLogout }) {
                     <th>ID</th>
                     <th>Tên sự kiện</th>
                     <th>Địa điểm</th>
-                    <th>Thời gian diễn ra</th>
-                    <th style={{ width: 180 }}>Trạng thái</th>
+                    <th>Thời gian</th>
+                    <th style={{ width: 170 }}>Trạng thái</th>
                     <th style={{ textAlign: 'right' }}>Thao tác</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {activeEvents.length === 0 ? (
+                  {filteredActiveEvents.length === 0 ? (
                     <tr>
                       <td colSpan="6" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
-                        Chưa có sự kiện nào đang hoạt động. Nhấn "+ Tạo sự kiện mới" ở góc phải để bắt đầu.
+                        {activeEvents.length === 0 ? 'Chưa có sự kiện nào.' : 'Không tìm thấy sự kiện phù hợp.'}
                       </td>
                     </tr>
                   ) : (
-                    activeEvents.map((ev) => (
+                    filteredActiveEvents.map((ev) => (
                       <tr key={ev.id}>
-                        <td className="mono">#{ev.id}</td>
+                        <td>
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              padding: '0.2rem 0.55rem',
+                              background: '#eff6ff',
+                              color: '#1d4ed8',
+                              fontWeight: 700,
+                              fontSize: '0.8rem',
+                              borderRadius: 6,
+                              fontFamily: 'monospace',
+                              border: '1px solid #bfdbfe'
+                            }}
+                          >
+                            #{getEventSeq(ev)}
+                          </span>
+                        </td>
                         <td>
                           <strong>{ev.title}</strong>
                           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                             {ev.category_name || `Danh mục #${ev.category_id}`}
                           </div>
                         </td>
-                        <td>{ev.venue_name}</td>
+                        <td>
+                          <div style={{ fontWeight: 600 }}>{ev.venue_name}</div>
+                          {ev.venue_address && (
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                              📍 {ev.venue_address}
+                            </div>
+                          )}
+                        </td>
                         <td style={{ fontSize: '0.82rem' }}>
-                          {new Date(ev.start_time).toLocaleString('vi-VN')}
+                          <div>{new Date(ev.start_time).toLocaleString('vi-VN')}</div>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                            Tạo: {new Date(ev.created_at).toLocaleDateString('vi-VN')}
+                          </div>
                         </td>
                         <td>
-                          <select
-                            className="form-input"
-                            style={{ padding: '0.3rem 0.5rem', fontSize: '0.8rem', fontWeight: 600 }}
-                            value={ev.status}
-                            onChange={(e) => handleStatusChange(ev.id, e.target.value)}
-                          >
-                            {STATUS_OPTIONS.map((st) => (
-                              <option
-                                key={st.value}
-                                value={st.value}
-                                disabled={ev.status !== 'DRAFT' && st.value === 'DRAFT'}
+                          {(() => {
+                            const st = getEventStatusBadge(ev);
+                            return (
+                              <span
+                                style={{
+                                  display: 'inline-block',
+                                  padding: '0.24rem 0.65rem',
+                                  borderRadius: 999,
+                                  fontSize: '0.76rem',
+                                  fontWeight: 700,
+                                  background: st.bg,
+                                  color: st.color,
+                                  border: `1px solid ${st.border}`
+                                }}
                               >
                                 {st.label}
-                              </option>
-                            ))}
-                          </select>
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td style={{ textAlign: 'right' }}>
                           <div style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'center' }}>
+                            {ev.status === 'DRAFT' && (
+                              <button
+                                type="button"
+                                className="btn btn-primary"
+                                style={{ padding: '0.32rem 0.7rem', fontSize: '0.78rem' }}
+                                onClick={() => handleStatusChange(ev.id, 'PUBLISHED')}
+                              >
+                                Công bố
+                              </button>
+                            )}
                             <button
                               type="button"
                               className="btn btn-outline"
@@ -970,7 +1297,7 @@ export default function OrganizerView({ user, onLogout }) {
                                 setSection('config');
                               }}
                             >
-                              {ev.status === 'DRAFT' ? 'Chỉnh sửa Sơ đồ & Vé →' : 'Xem Sơ đồ & Vé →'}
+                              {ev.status === 'DRAFT' ? 'Sơ đồ & Vé →' : 'Xem sơ đồ →'}
                             </button>
                             {ev.status === 'DRAFT' ? (
                               <button
@@ -982,14 +1309,15 @@ export default function OrganizerView({ user, onLogout }) {
                                 Xóa
                               </button>
                             ) : (
-                              ev.status !== 'COMPLETED' && (
+                              ev.status !== 'CANCELLED' &&
+                              getEventStatusBadge(ev).key !== 'COMPLETED' && (
                                 <button
                                   type="button"
                                   className="btn btn-danger"
                                   style={{ padding: '0.32rem 0.65rem', fontSize: '0.78rem' }}
                                   onClick={() => openCancelModal(ev)}
                                 >
-                                  Hủy sự kiện
+                                  Hủy
                                 </button>
                               )
                             )}
@@ -1004,7 +1332,7 @@ export default function OrganizerView({ user, onLogout }) {
               <div>
                 <div
                   style={{
-                    padding: '0.75rem 1rem',
+                    padding: '0.65rem 0.9rem',
                     background: '#fef2f2',
                     border: '1px solid #fecaca',
                     borderRadius: 6,
@@ -1013,24 +1341,24 @@ export default function OrganizerView({ user, onLogout }) {
                     marginBottom: '1rem'
                   }}
                 >
-                  Danh sách các sự kiện đã bị hủy trong tháng <strong>{currentMonthLabel}</strong>. Các sự kiện này đã được tự động hoàn tiền 100%, phát thông báo email cho khách hàng và gỡ khỏi danh sách mở bán.
+                  Sự kiện đã hủy trong tháng <strong>{currentMonthLabel}</strong> (đã hoàn tiền 100%).
                 </div>
                 <table className="data-table">
                   <thead>
                     <tr>
                       <th>ID</th>
-                      <th>Tên sự kiện đã hủy</th>
+                      <th>Tên sự kiện</th>
                       <th>Địa điểm</th>
-                      <th>Ngày giờ hủy</th>
+                      <th>Thời gian hủy</th>
                       <th>Lý do hủy</th>
-                      <th>Trạng thái xử lý</th>
+                      <th>Trạng thái</th>
                     </tr>
                   </thead>
                   <tbody>
                     {cancelledEventsThisMonth.length === 0 ? (
                       <tr>
                         <td colSpan="6" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
-                          Không có sự kiện nào bị hủy trong tháng {currentMonthLabel}.
+                          Không có sự kiện bị hủy trong tháng {currentMonthLabel}.
                         </td>
                       </tr>
                     ) : (
@@ -1038,7 +1366,23 @@ export default function OrganizerView({ user, onLogout }) {
                         const cancelTime = ev.cancelled_at || ev.updated_at || ev.created_at;
                         return (
                           <tr key={ev.id}>
-                            <td className="mono">#{ev.id}</td>
+                            <td>
+                              <span
+                                style={{
+                                  display: 'inline-block',
+                                  padding: '0.2rem 0.55rem',
+                                  background: '#fee2e2',
+                                  color: '#dc2626',
+                                  fontWeight: 700,
+                                  fontSize: '0.8rem',
+                                  borderRadius: 6,
+                                  fontFamily: 'monospace',
+                                  border: '1px solid #fecaca'
+                                }}
+                              >
+                                #{getEventSeq(ev)}
+                              </span>
+                            </td>
                             <td>
                               <strong>{ev.title}</strong>
                               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
@@ -1053,8 +1397,19 @@ export default function OrganizerView({ user, onLogout }) {
                               {ev.cancel_reason || 'Hủy theo quyết định từ Ban tổ chức'}
                             </td>
                             <td>
-                              <span className="badge badge-REJECTED">
-                                Đã hoàn tiền & Thông báo
+                              <span
+                                style={{
+                                  display: 'inline-block',
+                                  padding: '0.24rem 0.65rem',
+                                  borderRadius: 999,
+                                  fontSize: '0.76rem',
+                                  fontWeight: 700,
+                                  background: '#fef2f2',
+                                  color: '#dc2626',
+                                  border: '1px solid #fecaca'
+                                }}
+                              >
+                                Đang hủy
                               </span>
                             </td>
                           </tr>
@@ -1066,7 +1421,8 @@ export default function OrganizerView({ user, onLogout }) {
               </div>
             )}
           </div>
-        )}
+        </div>
+      )}
 
         {/* ==================== MỤC 2: SƠ ĐỒ GHẾ & GIÁ VÉ ==================== */}
         {section === 'config' && (
@@ -1081,46 +1437,57 @@ export default function OrganizerView({ user, onLogout }) {
                     value={selectedEventId}
                     onChange={(e) => setSelectedEventId(Number(e.target.value))}
                   >
-                    {activeEvents.map((ev) => (
+                    {myEvents.map((ev) => (
                       <option key={ev.id} value={ev.id}>
-                        #{ev.id} — {ev.title}
+                        #{getEventSeq(ev)} — {ev.title}
                       </option>
                     ))}
                   </select>
 
-                  {selectedEventDetail && selectedEventDetail.status !== 'CANCELLED' && (
-                    <select
-                      className="form-input"
-                      style={{ width: 170, fontWeight: 600 }}
-                      value={selectedEventDetail.status}
-                      onChange={(e) => handleStatusChange(selectedEventDetail.id, e.target.value)}
-                    >
-                      {STATUS_OPTIONS.map((st) => (
-                        <option
-                          key={st.value}
-                          value={st.value}
-                          disabled={selectedEventDetail.status !== 'DRAFT' && st.value === 'DRAFT'}
-                        >
-                          {st.label}
-                        </option>
-                      ))}
-                    </select>
-                  )}
+                  {selectedEventDetail && (() => {
+                    const st = getEventStatusBadge(selectedEventDetail);
+                    return (
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          padding: '0.28rem 0.75rem',
+                          borderRadius: 999,
+                          fontSize: '0.78rem',
+                          fontWeight: 700,
+                          background: st.bg,
+                          color: st.color,
+                          border: `1px solid ${st.border}`
+                        }}
+                      >
+                        {st.label}
+                      </span>
+                    );
+                  })()}
 
                   {selectedEventDetail && isEditable && (
-                    <button
-                      type="button"
-                      className="btn btn-danger"
-                      style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
-                      onClick={() => handleDeleteEvent(selectedEventDetail)}
-                    >
-                      Xóa sự kiện
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
+                        onClick={() => handleStatusChange(selectedEventDetail.id, 'PUBLISHED')}
+                      >
+                        Công bố
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-danger"
+                        style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
+                        onClick={() => handleDeleteEvent(selectedEventDetail)}
+                      >
+                        Xóa sự kiện
+                      </button>
+                    </>
                   )}
 
                   {selectedEventDetail &&
                     !isEditable &&
-                    selectedEventDetail.status !== 'COMPLETED' &&
+                    getEventStatusBadge(selectedEventDetail).key !== 'COMPLETED' &&
                     selectedEventDetail.status !== 'CANCELLED' && (
                       <button
                         type="button"
@@ -1128,7 +1495,7 @@ export default function OrganizerView({ user, onLogout }) {
                         style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
                         onClick={() => openCancelModal(selectedEventDetail)}
                       >
-                        Hủy sự kiện
+                        Hủy
                       </button>
                     )}
                 </div>
@@ -1139,14 +1506,14 @@ export default function OrganizerView({ user, onLogout }) {
                     className={`portal-switch-btn ${configTab === 'zones' ? 'active' : ''}`}
                     onClick={() => setConfigTab('zones')}
                   >
-                    Sơ đồ Khu vực & Ghế
+                    Sơ đồ ghế
                   </button>
                   <button
                     type="button"
                     className={`portal-switch-btn ${configTab === 'tickets' ? 'active' : ''}`}
                     onClick={() => setConfigTab('tickets')}
                   >
-                    Hạng vé & Giá vé
+                    Hạng vé
                   </button>
                 </div>
               </div>
@@ -1162,7 +1529,7 @@ export default function OrganizerView({ user, onLogout }) {
                   marginBottom: '1rem'
                 }}
               >
-                Sự kiện đã được công bố nên trình chỉnh sửa Sơ đồ ghế và Hạng vé đã khóa để bảo toàn dữ liệu vé. Chỉ sự kiện ở trạng thái <strong>Bản nháp</strong> mới có thể chỉnh sửa.
+                Sơ đồ và giá vé đã khóa do sự kiện đã công bố.
               </div>
             )}
 
@@ -1180,7 +1547,7 @@ export default function OrganizerView({ user, onLogout }) {
                           type="text"
                           required
                           className="form-input"
-                          placeholder="Khán đài A / Khu Fanzone"
+                          placeholder="VD: Khán đài A"
                           value={zoneName}
                           onChange={(e) => setZoneName(e.target.value)}
                         />
@@ -1193,8 +1560,8 @@ export default function OrganizerView({ user, onLogout }) {
                           value={zoneType}
                           onChange={(e) => setZoneType(e.target.value)}
                         >
-                          <option value="SEATED">Ghế ngồi theo lưới</option>
-                          <option value="STANDING">Khu đứng tự do</option>
+                          <option value="SEATED">Ghế ngồi</option>
+                          <option value="STANDING">Khu đứng</option>
                         </select>
                       </div>
 
@@ -1266,7 +1633,7 @@ export default function OrganizerView({ user, onLogout }) {
                       <span className="card-title">Sơ đồ Chỗ ngồi</span>
                       {isEditable && (
                         <p style={{ fontSize: '0.77rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                          Nhấn giữ và kéo chuột quét vùng nhiều ghế để tô nhanh, hoặc bấm vào đầu Hàng / Cột để tô cả dãy
+                          Kéo chuột để tô vùng ghế hoặc chọn đầu Hàng/Cột.
                         </p>
                       )}
                     </div>
@@ -1274,15 +1641,15 @@ export default function OrganizerView({ user, onLogout }) {
                       <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
                         <select
                           className="form-input"
-                          style={{ width: 235, padding: '0.32rem 0.6rem', fontSize: '0.8rem', fontWeight: 600 }}
+                          style={{ width: 190, padding: '0.32rem 0.6rem', fontSize: '0.8rem', fontWeight: 600 }}
                           value={brushMode}
                           onChange={(e) => setBrushMode(e.target.value)}
                         >
-                          <option value="DISABLE">Cọ tô: Bôi đen lối đi / cột chắn</option>
-                          <option value="ENABLE">Cọ tô: Khôi phục ghế đã khóa</option>
-                          <option value="VIP">Cọ tô: Đổi thành ghế VIP</option>
-                          <option value="STANDARD">Cọ tô: Đổi thành ghế Thường</option>
-                          <option value="STUDENT">Cọ tô: Đổi thành ghế Sinh viên</option>
+                          <option value="DISABLE">Bôi lối đi / Cột chắn</option>
+                          <option value="ENABLE">Khôi phục ghế</option>
+                          <option value="VIP">Đổi ghế VIP</option>
+                          <option value="STANDARD">Đổi ghế Thường</option>
+                          <option value="STUDENT">Đổi ghế SV</option>
                         </select>
 
                         {totalPendingSeats > 0 && (
@@ -1293,7 +1660,7 @@ export default function OrganizerView({ user, onLogout }) {
                             disabled={savingSeats}
                             onClick={handleSaveSeatMap}
                           >
-                            {savingSeats ? 'Đang lưu...' : `Lưu sơ đồ • ${totalPendingSeats} ghế`}
+                            {savingSeats ? 'Đang lưu...' : `Lưu (${totalPendingSeats})`}
                           </button>
                         )}
                       </div>
@@ -1339,7 +1706,7 @@ export default function OrganizerView({ user, onLogout }) {
                                       style={{ padding: '0.22rem 0.55rem', fontSize: '0.74rem' }}
                                       onClick={() => applyBrushToSeats(zone.id, zone.seats)}
                                     >
-                                      Tô cả khu vực
+                                      Tô tất cả
                                     </button>
                                     {zoneHasPending && (
                                       <button
@@ -1363,7 +1730,7 @@ export default function OrganizerView({ user, onLogout }) {
                                   style={{ padding: '0.22rem 0.55rem', fontSize: '0.74rem' }}
                                   onClick={() => handleDeleteZone(zone)}
                                 >
-                                  Xóa khu vực
+                                  Xóa
                                 </button>
                               </div>
                             )}
@@ -1371,7 +1738,7 @@ export default function OrganizerView({ user, onLogout }) {
 
                           {zone.zone_type === 'STANDING' ? (
                             <div style={{ padding: '1rem', textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 6, background: '#fff', fontSize: '0.84rem' }}>
-                              Khu vực đứng tự do — Tổng sức chứa: <strong>{zone.total_capacity}</strong> vé
+                              Khu đứng tự do — Sức chứa: <strong>{zone.total_capacity}</strong> vé
                             </div>
                           ) : (
                             <div style={{ overflowX: 'auto' }}>
@@ -1490,145 +1857,328 @@ export default function OrganizerView({ user, onLogout }) {
               </div>
             )}
 
-            {selectedEventId && configTab === 'tickets' && (
-              <div style={{ display: 'grid', gridTemplateColumns: isEditable ? '350px 1fr' : '1fr', gap: '1.25rem', alignItems: 'start' }}>
-                {isEditable && (
-                  <div className="card">
-                    <div className="card-header">
-                      <span className="card-title">Thêm Hạng vé</span>
+            {selectedEventId && configTab === 'tickets' && (() => {
+              const currentSelectedZone = seatMapZones.find((z) => Number(z.id) === Number(ttZoneId));
+              const currentZoneSeats = currentSelectedZone?.seats || [];
+              const currentActiveSeats = currentZoneSeats.filter((s) => !s.is_disabled);
+              const vipCount = currentActiveSeats.filter((s) => s.seat_tier === 'VIP').length;
+              const stdCount = currentActiveSeats.filter((s) => s.seat_tier === 'STANDARD' || !s.seat_tier).length;
+              const stuCount = currentActiveSeats.filter((s) => s.seat_tier === 'STUDENT').length;
+
+              return (
+                <div>
+                  {/* Bảng kiểm tra tiến độ đáp ứng ràng buộc Hạng vé theo Sơ đồ chỗ ngồi */}
+                  <div className="card" style={{ marginBottom: '1.25rem', padding: '1.1rem 1.25rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      <span className="card-title" style={{ fontSize: '0.98rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <span>📋</span> <strong>Ràng buộc phát hành vé theo Sơ đồ chỗ ngồi</strong>
+                      </span>
+                      <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                        Quy tắc: Khi tạo bao nhiêu phân loại chỗ ngồi thì phải tạo <strong>tối thiểu bấy nhiêu loại vé tương ứng</strong> (có thể tạo thêm vé Early Bird, Sinh viên...)
+                      </span>
                     </div>
-                    <form onSubmit={handleCreateTicketType}>
-                      <div className="form-group">
-                        <label className="form-label">Khu vực áp dụng</label>
-                        <select
-                          required
-                          className="form-input"
-                          value={ttZoneId}
-                          onChange={(e) => setTtZoneId(e.target.value)}
-                        >
-                          <option value="">-- Chọn khu vực --</option>
-                          {seatMapZones.map((z) => (
-                            <option key={z.id} value={z.id}>
-                              {cleanName(z.name)} — {z.total_capacity} chỗ
-                            </option>
-                          ))}
-                        </select>
-                      </div>
 
-                      <div className="form-group">
-                        <label className="form-label">Tên Hạng vé</label>
-                        <input
-                          type="text"
-                          required
-                          className="form-input"
-                          placeholder="Vé VIP / Vé Sinh viên"
-                          value={ttName}
-                          onChange={(e) => setTtName(e.target.value)}
-                        />
-                      </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '0.85rem' }}>
+                      {seatMapZones.map((z) => {
+                        const zTts = selectedEventDetail?.ticket_types?.filter((tt) => tt.zone_id === z.id) || [];
+                        const isSeated = z.zone_type === 'SEATED';
+                        let tierCounts = {};
+                        let totalActive = 0;
+                        if (isSeated) {
+                          const activeSeats = (z.seats || []).filter((s) => !s.is_disabled);
+                          totalActive = activeSeats.length;
+                          activeSeats.forEach((s) => {
+                            const t = s.seat_tier || 'STANDARD';
+                            tierCounts[t] = (tierCounts[t] || 0) + 1;
+                          });
+                        }
+                        const distinctTiers = Object.keys(tierCounts);
+                        const isQualified = isSeated
+                          ? zTts.length >= distinctTiers.length && distinctTiers.length > 0
+                          : zTts.length >= 1;
+                        const totalQty = zTts.reduce((sum, item) => sum + (item.total_quantity || 0), 0);
 
-                      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr', gap: '0.6rem' }} className="form-group">
-                        <div>
-                          <label className="form-label">Giá chuẩn</label>
-                          <input
-                            type="number"
-                            min="0"
-                            required
-                            className="form-input"
-                            placeholder="300000"
-                            value={ttBasePrice}
-                            onChange={(e) => setTtBasePrice(e.target.value)}
-                          />
+                        return (
+                          <div
+                            key={z.id}
+                            style={{
+                              padding: '0.85rem 1rem',
+                              borderRadius: 8,
+                              border: isQualified ? '1px solid #bbf7d0' : '1px solid #fed7aa',
+                              background: isQualified ? '#f0fdf4' : '#fffbeb'
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                              <strong style={{ fontSize: '0.88rem' }}>{cleanName(z.name)}</strong>
+                              <span
+                                className={`badge ${isQualified ? 'badge-APPROVED' : 'badge-PENDING'}`}
+                                style={{ fontSize: '0.7rem' }}
+                              >
+                                {isQualified ? '✓ Đạt yêu cầu' : '⚠️ Cần thêm loại vé'}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: '0.78rem', color: '#475569', marginBottom: '0.45rem' }}>
+                              {isSeated ? (
+                                <span>
+                                  Phân loại chỗ ngồi: {distinctTiers.map(t => `${t === 'VIP' ? 'Ghế VIP ⭐' : t === 'STANDARD' ? 'Ghế Thường' : 'Ghế SV'}: ${tierCounts[t]} chỗ`).join(' • ')} (Tổng {totalActive} ghế)
+                                </span>
+                              ) : (
+                                <span>Khu vực đứng tự do (Sức chứa {z.total_capacity} chỗ)</span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: '0.76rem', color: isQualified ? '#15803d' : '#b45309', fontWeight: 600 }}>
+                              {isSeated
+                                ? `Đã tạo ${zTts.length} loại vé (Tổng ${totalQty} vé) / Yêu cầu tối thiểu ${distinctTiers.length} loại vé cho ${distinctTiers.length} phân loại chỗ ngồi.`
+                                : `Đã tạo ${zTts.length} loại vé (Tổng ${totalQty} vé) / Yêu cầu tối thiểu 1 loại vé.`}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: isEditable ? '360px 1fr' : '1fr', gap: '1.25rem', alignItems: 'start' }}>
+                    {isEditable && (
+                      <div className="card">
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span className="card-title">
+                            {editingTicketType ? `Sửa: ${cleanName(editingTicketType.name)}` : 'Thêm Hạng vé'}
+                          </span>
+                          {editingTicketType && (
+                            <button
+                              type="button"
+                              className="btn btn-outline"
+                              style={{ padding: '0.2rem 0.55rem', fontSize: '0.74rem' }}
+                              onClick={handleCancelEditTicketType}
+                            >
+                              Hủy sửa
+                            </button>
+                          )}
                         </div>
-                        <div>
-                          <label className="form-label">Số lượng</label>
-                          <input
-                            type="number"
-                            min="1"
-                            required
-                            className="form-input"
-                            value={ttTotalQty}
-                            onChange={(e) => setTtTotalQty(e.target.value)}
-                          />
-                        </div>
-                        <div>
-                          <label className="form-label">Tối đa/đơn</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="20"
-                            required
-                            className="form-input"
-                            value={ttMaxPerOrder}
-                            onChange={(e) => setTtMaxPerOrder(e.target.value)}
-                          />
-                        </div>
-                      </div>
+                        <form onSubmit={handleCreateTicketType}>
+                          <div className="form-group">
+                            <label className="form-label">Khu vực áp dụng</label>
+                            <select
+                              required
+                              className="form-input"
+                              value={ttZoneId}
+                              disabled={Boolean(editingTicketType)}
+                              onChange={(e) => setTtZoneId(e.target.value)}
+                            >
+                              <option value="">-- Chọn khu vực --</option>
+                              {seatMapZones.map((z) => (
+                                <option key={z.id} value={z.id}>
+                                  {cleanName(z.name)} — {z.total_capacity} chỗ ({z.zone_type === 'SEATED' ? 'Ghế ngồi' : 'Vé đứng'})
+                                </option>
+                              ))}
+                            </select>
 
-                      <div className="form-group">
-                        <label className="form-label">Đuôi Email Sinh viên</label>
-                        <input
-                          type="text"
-                          className="form-input"
-                          placeholder="@tdtu.edu.vn"
-                          value={ttStudentDomain}
-                          onChange={(e) => setTtStudentDomain(e.target.value)}
-                        />
-                      </div>
+                            {/* Gợi ý nhanh điền loại vé tương ứng cho từng phân loại chỗ ngồi */}
+                            {!editingTicketType && currentSelectedZone?.zone_type === 'SEATED' && (
+                              <div style={{ marginTop: '0.5rem', padding: '0.5rem', background: '#f8fafc', borderRadius: 6, border: '1px dashed #cbd5e1' }}>
+                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '0.35rem' }}>
+                                  💡 GỢI Ý THEO HẠNG GHẾ:
+                                </div>
+                                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                                  {vipCount > 0 && (
+                                    <button
+                                      type="button"
+                                      className="btn btn-outline"
+                                      style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem', background: '#fffbeb', borderColor: '#f59e0b', color: '#b45309' }}
+                                      onClick={() => {
+                                        setTtName(`Vé VIP - ${cleanName(currentSelectedZone.name)}`);
+                                        setTtTotalQty(vipCount);
+                                        setTtBasePrice(500000);
+                                      }}
+                                    >
+                                      ⭐ Vé VIP ({vipCount} vé)
+                                    </button>
+                                  )}
+                                  {stdCount > 0 && (
+                                    <button
+                                      type="button"
+                                      className="btn btn-outline"
+                                      style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem', background: '#ffffff', borderColor: '#cbd5e1', color: '#334155' }}
+                                      onClick={() => {
+                                        setTtName(`Vé Ghế Thường - ${cleanName(currentSelectedZone.name)}`);
+                                        setTtTotalQty(stdCount);
+                                        setTtBasePrice(300000);
+                                      }}
+                                    >
+                                      🪑 Ghế Thường ({stdCount} vé)
+                                    </button>
+                                  )}
+                                  {stuCount > 0 && (
+                                    <button
+                                      type="button"
+                                      className="btn btn-outline"
+                                      style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem', background: '#eff6ff', borderColor: '#93c5fd', color: '#1d4ed8' }}
+                                      onClick={() => {
+                                        setTtName(`Vé Ghế Sinh Viên - ${cleanName(currentSelectedZone.name)}`);
+                                        setTtTotalQty(stuCount);
+                                        setTtBasePrice(150000);
+                                        setTtStudentDomain('@tdtu.edu.vn');
+                                      }}
+                                    >
+                                      🎓 Ghế SV ({stuCount} vé)
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
 
-                      <div className="form-group">
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer' }}>
-                          <input
-                            type="checkbox"
-                            checked={enableEarlyBird}
-                            onChange={(e) => setEnableEarlyBird(e.target.checked)}
-                          />
-                          Áp dụng giá ưu đãi theo thời gian
-                        </label>
-                      </div>
+                          <div className="form-group">
+                            <label className="form-label">Tên Hạng vé</label>
+                            <input
+                              type="text"
+                              required
+                              className="form-input"
+                              placeholder="Vé VIP / Vé Sinh viên"
+                              value={ttName}
+                              onChange={(e) => setTtName(e.target.value)}
+                            />
+                          </div>
 
-                      {enableEarlyBird && (
-                        <div style={{ padding: '0.75rem', background: 'var(--bg-page)', borderRadius: 6, border: '1px solid var(--border)', marginBottom: '1rem' }}>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr', gap: '0.6rem' }} className="form-group">
+                            <div>
+                              <label className="form-label">Giá chuẩn</label>
+                              <input
+                                type="number"
+                                min="0"
+                                required
+                                className="form-input"
+                                placeholder="300000"
+                                value={ttBasePrice}
+                                onChange={(e) => setTtBasePrice(e.target.value)}
+                              />
+                            </div>
+                            <div>
+                              <label className="form-label">Số lượng</label>
+                              <input
+                                type="number"
+                                min="1"
+                                required
+                                className="form-input"
+                                value={ttTotalQty}
+                                onChange={(e) => setTtTotalQty(e.target.value)}
+                              />
+                            </div>
+                            <div>
+                              <label className="form-label">Tối đa/đơn</label>
+                              <input
+                                type="number"
+                                min="1"
+                                max="20"
+                                required
+                                className="form-input"
+                                value={ttMaxPerOrder}
+                                onChange={(e) => setTtMaxPerOrder(e.target.value)}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Thời gian mở bán & kết thúc bán vé (Mặc định kết thúc trước khi sự kiện diễn ra) */}
+                          <div style={{ padding: '0.65rem', background: '#f8fafc', borderRadius: 6, border: '1px solid #e2e8f0', marginBottom: '0.85rem' }}>
+                            <div style={{ fontSize: '0.76rem', fontWeight: 700, color: '#1e293b', marginBottom: '0.45rem' }}>
+                              ⏰ Thời gian bán vé (Mặc định trước giờ sự kiện)
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0.5rem' }}>
+                              <div>
+                                <label className="form-label" style={{ fontSize: '0.74rem' }}>Mở bán từ</label>
+                                <input
+                                  type="datetime-local"
+                                  required
+                                  className="form-input"
+                                  style={{ fontSize: '0.8rem', padding: '0.35rem 0.5rem' }}
+                                  value={ttSaleStartTime}
+                                  max={selectedEventDetail?.start_time ? toLocalInputDateTime(selectedEventDetail.start_time) : undefined}
+                                  onChange={(e) => setTtSaleStartTime(e.target.value)}
+                                />
+                              </div>
+                              <div>
+                                <label className="form-label" style={{ fontSize: '0.74rem' }}>Kết thúc bán lúc</label>
+                                <input
+                                  type="datetime-local"
+                                  required
+                                  className="form-input"
+                                  style={{ fontSize: '0.8rem', padding: '0.35rem 0.5rem' }}
+                                  value={ttSaleEndTime}
+                                  max={selectedEventDetail?.start_time ? toLocalInputDateTime(selectedEventDetail.start_time) : undefined}
+                                  onChange={(e) => setTtSaleEndTime(e.target.value)}
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="form-group">
+                            <label className="form-label">Đuôi Email Sinh viên</label>
                             <input
                               type="text"
                               className="form-input"
-                              placeholder="Tên đợt ưu đãi"
-                              value={ruleName}
-                              onChange={(e) => setRuleName(e.target.value)}
-                            />
-                            <input
-                              type="number"
-                              min="0"
-                              className="form-input"
-                              placeholder="Giá ưu đãi"
-                              value={ruleDiscountPrice}
-                              onChange={(e) => setRuleDiscountPrice(e.target.value)}
+                              placeholder="@tdtu.edu.vn"
+                              value={ttStudentDomain}
+                              onChange={(e) => setTtStudentDomain(e.target.value)}
                             />
                           </div>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
-                            <input
-                              type="datetime-local"
-                              className="form-input"
-                              value={ruleStartDate}
-                              onChange={(e) => setRuleStartDate(e.target.value)}
-                            />
-                            <input
-                              type="datetime-local"
-                              className="form-input"
-                              value={ruleEndDate}
-                              onChange={(e) => setRuleEndDate(e.target.value)}
-                            />
-                          </div>
-                        </div>
-                      )}
 
-                      <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={ttLoading || !ttZoneId}>
-                        {ttLoading ? 'Đang lưu...' : '+ Lưu Hạng vé'}
-                      </button>
-                    </form>
-                  </div>
-                )}
+                          {!editingTicketType && (
+                            <>
+                              <div className="form-group">
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer' }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={enableEarlyBird}
+                                    onChange={(e) => setEnableEarlyBird(e.target.checked)}
+                                  />
+                                  Áp dụng giá ưu đãi theo thời gian
+                                </label>
+                              </div>
+
+                              {enableEarlyBird && (
+                                <div style={{ padding: '0.75rem', background: 'var(--bg-page)', borderRadius: 6, border: '1px solid var(--border)', marginBottom: '1rem' }}>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                                    <input
+                                      type="text"
+                                      className="form-input"
+                                      placeholder="Tên đợt ưu đãi"
+                                      value={ruleName}
+                                      onChange={(e) => setRuleName(e.target.value)}
+                                    />
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      className="form-input"
+                                      placeholder="Giá ưu đãi"
+                                      value={ruleDiscountPrice}
+                                      onChange={(e) => setRuleDiscountPrice(e.target.value)}
+                                    />
+                                  </div>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                                    <input
+                                      type="datetime-local"
+                                      className="form-input"
+                                      value={ruleStartDate}
+                                      onChange={(e) => setRuleStartDate(e.target.value)}
+                                    />
+                                    <input
+                                      type="datetime-local"
+                                      className="form-input"
+                                      value={ruleEndDate}
+                                      onChange={(e) => setRuleEndDate(e.target.value)}
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          )}
+
+                          <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={ttLoading || !ttZoneId}>
+                            {ttLoading ? 'Đang lưu...' : editingTicketType ? 'Lưu cập nhật Hạng vé' : '+ Lưu Hạng vé'}
+                          </button>
+                        </form>
+                      </div>
+                    )}
 
                 <div className="card">
                   <div className="card-header">
@@ -1639,8 +2189,9 @@ export default function OrganizerView({ user, onLogout }) {
                       <tr>
                         <th>Tên hạng vé</th>
                         <th>Khu vực</th>
-                        <th>Giá đang áp dụng</th>
+                        <th>Giá áp dụng</th>
                         <th>Số lượng</th>
+                        <th>Thời gian bán vé</th>
                         <th>Điều kiện mua</th>
                         {isEditable && <th style={{ textAlign: 'right' }}>Thao tác</th>}
                       </tr>
@@ -1648,50 +2199,72 @@ export default function OrganizerView({ user, onLogout }) {
                     <tbody>
                       {!selectedEventDetail?.ticket_types?.length ? (
                         <tr>
-                          <td colSpan={isEditable ? 6 : 5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
+                          <td colSpan={isEditable ? 7 : 6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
                             Chưa có hạng vé nào cho sự kiện này.
                           </td>
                         </tr>
                       ) : (
-                        selectedEventDetail.ticket_types.map((tt) => (
-                          <tr key={tt.id}>
-                            <td><strong>{cleanName(tt.name)}</strong></td>
-                            <td>Khu vực #{tt.zone_id}</td>
-                            <td>
-                              <strong style={{ color: 'var(--accent-blue)' }}>
-                                {tt.current_price != null ? `${Number(tt.current_price).toLocaleString('vi-VN')} đ` : '—'}
-                              </strong>
-                              {tt.active_rule_name && (
-                                <span className="badge badge-APPROVED" style={{ marginLeft: 6 }}>
-                                  {cleanName(tt.active_rule_name)}
-                                </span>
-                              )}
-                            </td>
-                            <td>{tt.total_quantity} vé</td>
-                            <td style={{ fontSize: '0.8rem' }}>
-                              Tối đa {tt.max_per_order} vé/đơn
-                              {tt.student_email_domain ? ` • Email ${tt.student_email_domain}` : ''}
-                            </td>
-                            {isEditable && (
-                              <td style={{ textAlign: 'right' }}>
-                                <button
-                                  type="button"
-                                  className="btn btn-danger"
-                                  style={{ padding: '0.26rem 0.6rem', fontSize: '0.75rem' }}
-                                  onClick={() => handleDeleteTicketType(tt)}
-                                >
-                                  Xóa
-                                </button>
+                        selectedEventDetail.ticket_types.map((tt) => {
+                          const saleStart = tt.sale_start_time || tt.created_at;
+                          const saleEnd = tt.sale_end_time || selectedEventDetail?.start_time;
+                          return (
+                            <tr key={tt.id}>
+                              <td><strong>{cleanName(tt.name)}</strong></td>
+                              <td>Khu vực #{tt.zone_id}</td>
+                              <td>
+                                <strong style={{ color: 'var(--accent-blue)' }}>
+                                  {tt.current_price != null ? `${Number(tt.current_price).toLocaleString('vi-VN')} đ` : '—'}
+                                </strong>
+                                {tt.active_rule_name && (
+                                  <span className="badge badge-APPROVED" style={{ marginLeft: 6 }}>
+                                    {cleanName(tt.active_rule_name)}
+                                  </span>
+                                )}
                               </td>
-                            )}
-                          </tr>
-                        ))
+                              <td>{tt.total_quantity} vé</td>
+                              <td style={{ fontSize: '0.76rem' }}>
+                                <div>Mở: {saleStart ? new Date(saleStart).toLocaleString('vi-VN') : '—'}</div>
+                                <div style={{ color: 'var(--text-muted)' }}>
+                                  Đóng: {saleEnd ? new Date(saleEnd).toLocaleString('vi-VN') : '—'}
+                                </div>
+                              </td>
+                              <td style={{ fontSize: '0.8rem' }}>
+                                Tối đa {tt.max_per_order} vé/đơn
+                                {tt.student_email_domain ? ` • Email ${tt.student_email_domain}` : ''}
+                              </td>
+                              {isEditable && (
+                                <td style={{ textAlign: 'right' }}>
+                                  <div style={{ display: 'inline-flex', gap: '0.35rem' }}>
+                                    <button
+                                      type="button"
+                                      className="btn btn-outline"
+                                      style={{ padding: '0.26rem 0.6rem', fontSize: '0.75rem' }}
+                                      onClick={() => handleStartEditTicketType(tt)}
+                                    >
+                                      Sửa
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-danger"
+                                      style={{ padding: '0.26rem 0.6rem', fontSize: '0.75rem' }}
+                                      onClick={() => handleDeleteTicketType(tt)}
+                                    >
+                                      Xóa
+                                    </button>
+                                  </div>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
                 </div>
               </div>
-            )}
+            </div>
+          );
+        })()}
           </>
         )}
 
@@ -1704,21 +2277,21 @@ export default function OrganizerView({ user, onLogout }) {
                 className={`portal-switch-btn ${staffTab === 'list' ? 'active' : ''}`}
                 onClick={() => setStaffTab('list')}
               >
-                Danh sách Nhân viên riêng
+                Nhân viên ({managedStaff.length})
               </button>
               <button
                 type="button"
                 className={`portal-switch-btn ${staffTab === 'assign' ? 'active' : ''}`}
                 onClick={() => setStaffTab('assign')}
               >
-                Phân công vào Sự kiện
+                Phân công
               </button>
             </div>
 
             {staffTab === 'list' ? (
               <div className="card">
                 <div className="card-header">
-                  <span className="card-title">Nhân viên thuộc quyền quản lý của {orgDisplayName}</span>
+                  <span className="card-title">Danh sách Nhân viên</span>
                 </div>
 
                 <form onSubmit={handleCreateStaff} style={{ marginBottom: '1.25rem', padding: '1rem', background: 'var(--bg-page)', borderRadius: 8, border: '1px solid var(--border)' }}>
@@ -1835,7 +2408,7 @@ export default function OrganizerView({ user, onLogout }) {
                       >
                         {myEvents.map((ev) => (
                           <option key={ev.id} value={ev.id}>
-                            #{ev.id} — {ev.title}
+                            #{getEventSeq(ev)} — {ev.title}
                           </option>
                         ))}
                       </select>
@@ -1912,7 +2485,7 @@ export default function OrganizerView({ user, onLogout }) {
                     {assignedStaffList.length === 0 ? (
                       <tr>
                         <td colSpan="6" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '1.5rem' }}>
-                          Chưa có nhân sự nào được phân công tại Sự kiện #{targetEventId}.
+                          Chưa có nhân sự nào được phân công tại Sự kiện #{getEventSeq(myEvents.find((e) => e.id === targetEventId)) || targetEventId}.
                         </td>
                       </tr>
                     ) : (
@@ -1961,21 +2534,21 @@ export default function OrganizerView({ user, onLogout }) {
               </button>
 
               <h2 style={{ fontSize: '1.2rem', fontWeight: 700, color: '#dc2626', marginBottom: '0.35rem' }}>
-                Xác thực Bảo mật Hủy Sự kiện #{cancelModalEvent.id}
+                Hủy sự kiện #{getEventSeq(cancelModalEvent)}
               </h2>
               <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '1rem' }}>
-                Khi hủy sự kiện <strong>{cancelModalEvent.title}</strong>, hệ thống sẽ tự động hoàn tiền 100% các đơn vé đã thanh toán, gửi thông báo hủy sự kiện và chuyển sự kiện vào mục <strong>Sự kiện đã bị hủy trong tháng</strong>. Để chống người lạ sử dụng phiên đăng nhập trái phép hủy sự kiện, vui lòng hoàn tất 3 bước xác thực:
+                Hệ thống sẽ hoàn tiền 100% cho khách mua vé. Vui lòng xác thực:
               </p>
 
               <form onSubmit={handleConfirmCancelEvent}>
                 <div className="form-group">
-                  <label className="form-label">1. Lý do hủy sự kiện</label>
+                  <label className="form-label">1. Lý do hủy</label>
                   <input
                     type="text"
                     required
                     minLength={10}
                     className="form-input"
-                    placeholder="Nhập lý do chi tiết tối thiểu 10 ký tự để thông báo cho khách mua vé"
+                    placeholder="Tối thiểu 10 ký tự"
                     value={cancelReason}
                     onChange={(e) => setCancelReason(e.target.value)}
                   />
@@ -1983,7 +2556,7 @@ export default function OrganizerView({ user, onLogout }) {
 
                 <div className="form-group">
                   <label className="form-label">
-                    2. Nhập chính xác tên sự kiện: <span style={{ color: '#dc2626' }}>{cancelModalEvent.title}</span>
+                    2. Xác nhận tên sự kiện: <span style={{ color: '#dc2626' }}>{cancelModalEvent.title}</span>
                   </label>
                   <input
                     type="text"
@@ -1996,14 +2569,14 @@ export default function OrganizerView({ user, onLogout }) {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">3. Mã bảo mật OTP 6 chữ số</label>
+                  <label className="form-label">3. Mã OTP</label>
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <input
                       type="text"
                       required
                       maxLength={6}
                       className="form-input mono"
-                      placeholder="Nhập mã OTP 6 số"
+                      placeholder="Mã 6 số"
                       value={cancelOtp}
                       onChange={(e) => setCancelOtp(e.target.value)}
                     />
@@ -2025,12 +2598,12 @@ export default function OrganizerView({ user, onLogout }) {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">4. Mật khẩu hiện tại của tài khoản Ban tổ chức</label>
+                  <label className="form-label">4. Mật khẩu của bạn</label>
                   <input
                     type="password"
                     required
                     className="form-input"
-                    placeholder="Nhập mật khẩu đăng nhập để xác nhận chính chủ"
+                    placeholder="Mật khẩu tài khoản"
                     value={cancelPassword}
                     onChange={(e) => setCancelPassword(e.target.value)}
                   />
@@ -2055,7 +2628,7 @@ export default function OrganizerView({ user, onLogout }) {
                       cancelReason.trim().length < 10
                     }
                   >
-                    {cancelSubmitting ? 'Đang xử lý hủy & hoàn tiền...' : 'Xác nhận Hủy & Hoàn tiền 100%'}
+                    {cancelSubmitting ? 'Đang hủy...' : 'Xác nhận Hủy'}
                   </button>
                 </div>
               </form>

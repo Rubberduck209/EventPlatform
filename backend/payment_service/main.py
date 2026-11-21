@@ -1,3 +1,15 @@
+import sys
+if sys.platform == "win32":
+    import asyncio
+    from asyncio.selector_events import BaseSelectorEventLoop
+    _orig_read_from_self = BaseSelectorEventLoop._read_from_self
+    def _read_from_self_patched(self):
+        try:
+            _orig_read_from_self(self)
+        except (ConnectionResetError, OSError):
+            pass
+    BaseSelectorEventLoop._read_from_self = _read_from_self_patched
+
 import hashlib
 import json
 import os
@@ -10,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session, joinedload
 
 from auth import TokenUser, get_current_user, require_roles
@@ -44,6 +57,66 @@ from vnpay import (
     get_vnpay_config,
     verify_vnpay_signature,
 )
+import urllib.request
+import urllib.parse
+
+BOOKING_SERVICE_URL = os.getenv("BOOKING_SERVICE_URL", "http://localhost:8003").rstrip("/")
+
+
+def notify_booking_service(booking_id: int, status: str) -> bool:
+    """
+    Đồng bộ kết quả thanh toán sang Booking Service (Port 8003):
+    - status="CONFIRMED": Thanh toán thành công (ghế HELD -> SOLD, vé đứng -> sold_quantity).
+    - status="CANCELLED": Thanh toán thất bại hoặc hoàn tiền (trả lại ghế và vé đứng về kho).
+    """
+    if not booking_id:
+        return False
+    raw_base = os.getenv("BOOKING_SERVICE_URL", "http://localhost:8003").rstrip("/")
+    clean_base = raw_base.replace("/api/v1", "").rstrip("/") or "http://localhost:8003"
+
+    candidate_endpoints = [
+        f"{clean_base}/bookings/{booking_id}/status",
+        f"{raw_base}/bookings/{booking_id}/status",
+        f"{clean_base}/api/v1/bookings/{booking_id}/status",
+    ]
+
+    # Thử qua httpx trước (ổn định và truyền params/headers chuẩn HTTP/1.1)
+    try:
+        import httpx
+        for endpoint in candidate_endpoints:
+            try:
+                with httpx.Client(timeout=6.0) as client:
+                    resp = client.put(endpoint, params={"status": status})
+                    if resp.status_code in (200, 201):
+                        return True
+                    if resp.status_code == 409 and status in resp.text:
+                        return True
+            except Exception:
+                continue
+    except ImportError:
+        pass
+
+    # Dự phòng bằng urllib nếu môi trường thiếu httpx
+    for endpoint in candidate_endpoints:
+        try:
+            url = f"{endpoint}?status={status}"
+            req = urllib.request.Request(url, data=b"", headers={"Content-Length": "0"}, method="PUT")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status in (200, 201):
+                    return True
+        except urllib.error.HTTPError as he:
+            body = ""
+            try:
+                body = he.read().decode("utf-8", errors="ignore")
+            except Exception:
+                pass
+            if he.code == 409 and status in body:
+                return True
+        except Exception:
+            continue
+
+    print(f"[Notice] Không thể kết nối cập nhật đơn #{booking_id} sang Booking Service ({clean_base})")
+    return False
 
 
 def compute_request_hash(data: Dict[str, Any]) -> str:
@@ -74,7 +147,7 @@ def format_payment_response(
             payment_url = build_vnpay_payment_url(
                 payment_code=payment.payment_code,
                 amount_vnd=float(payment.amount),
-                order_desc=f"Thanh toan don dat ve #{payment.booking_id} ({payment.payment_code})",
+                order_desc=f"Thanh toan don dat ve {payment.booking_id} - {payment.payment_code}",
             )
         else:
             payment_url = f"http://localhost:8004/api/v1/payments/mock-checkout/{payment.payment_code}"
@@ -157,6 +230,18 @@ def seed_initial_payment_data(db: Session):
 async def lifespan(app: FastAPI):
     """Khởi tạo các bảng trong `payment_db` và nạp dữ liệu mẫu ban đầu."""
     Base.metadata.create_all(bind=engine)
+    with engine.connect() as conn:
+        for alter_sql in (
+            "ALTER TABLE payment_refunds ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+            "ALTER TABLE payments ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+            "ALTER TABLE payments MODIFY COLUMN status ENUM('PENDING', 'SUCCESS', 'FAILED', 'CANCELLED', 'EXPIRED') NOT NULL DEFAULT 'PENDING'",
+        ):
+            try:
+                conn.execute(text(alter_sql))
+                conn.commit()
+            except Exception:
+                pass
+
     db = next(get_db())
     try:
         seed_initial_payment_data(db)
@@ -265,7 +350,7 @@ def create_payment_session(
 
     # 4. Sinh URL chuyển hướng sang VNPay Sandbox hoặc Mock Gateway
     client_ip = request.client.host if request and request.client else "127.0.0.1"
-    order_desc = payload.order_desc or f"Thanh toan don dat ve #{payload.booking_id} ({payment_code})"
+    order_desc = payload.order_desc or f"Thanh toan don dat ve {payload.booking_id} - {payment_code}"
 
     if payload.payment_method == PaymentMethod.VNPAY_SANDBOX:
         payment_url = build_vnpay_payment_url(
@@ -352,6 +437,7 @@ def process_vnpay_ipn_params(
         payment.gateway_transaction_no = transaction_no
         payment.gateway_response_raw = dict(params)
         payment.paid_at = now
+        notify_booking_service(payment.booking_id, "CONFIRMED")
         notify_payment_succeeded(
             payment_code=payment.payment_code,
             booking_id=payment.booking_id,
@@ -363,6 +449,7 @@ def process_vnpay_ipn_params(
         payment.status = PaymentStatus.FAILED
         payment.gateway_transaction_no = transaction_no
         payment.gateway_response_raw = dict(params)
+        notify_booking_service(payment.booking_id, "CANCELLED")
         notify_payment_failed(
             payment_code=payment.payment_code,
             booking_id=payment.booking_id,
@@ -566,6 +653,7 @@ def refund_payment(
     db.commit()
     db.refresh(refund_record)
 
+    notify_booking_service(payment.booking_id, "CANCELLED")
     notify_payment_refunded(
         payment_code=payment.payment_code,
         booking_id=payment.booking_id,
@@ -632,6 +720,7 @@ def refund_payments_by_event(
         refunded_count += 1
         total_refunded_amount += remaining
 
+        notify_booking_service(payment.booking_id, "CANCELLED")
         notify_payment_refunded(
             payment_code=payment.payment_code,
             booking_id=payment.booking_id,
@@ -665,6 +754,21 @@ def list_my_payments(
         for sp in seeded:
             if sp.customer_id != current_user.id:
                 sp.customer_id = current_user.id
+        db.commit()
+
+    # Tự động quét và cập nhật các đơn PENDING đã quá 10 phút sang EXPIRED
+    now = datetime.utcnow()
+    pending_payments = (
+        db.query(Payment)
+        .filter(Payment.status == PaymentStatus.PENDING)
+        .all()
+    )
+    has_expired_update = False
+    for p in pending_payments:
+        if p.created_at and (now - p.created_at) > timedelta(minutes=10):
+            p.status = PaymentStatus.EXPIRED
+            has_expired_update = True
+    if has_expired_update:
         db.commit()
 
     query = db.query(Payment).options(joinedload(Payment.refunds))
@@ -711,16 +815,57 @@ def redirect_to_vnpay_checkout(
     """
     Sinh URL VNPay Sandbox mới nhất (với `VNPAY_TMN_CODE` hiện tại trong `.env` và `vnp_CreateDate` tức thời)
     rồi chuyển hướng (302 Redirect) trình duyệt sang cổng thanh toán VNPay Sandbox.
+    Nếu đơn đã hết hạn (quá 10 phút) hoặc không ở trạng thái PENDING, chặn thanh toán và hiển thị thông báo.
     """
     payment = db.query(Payment).filter(Payment.id == payment_id).first()
     if not payment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy giao dịch thanh toán.")
 
+    now = datetime.utcnow()
+    is_expired = (
+        payment.status == PaymentStatus.EXPIRED
+        or (payment.status == PaymentStatus.PENDING and payment.created_at and (now - payment.created_at) > timedelta(minutes=10))
+    )
+    if is_expired:
+        payment.status = PaymentStatus.EXPIRED
+        db.commit()
+        html = """
+        <!DOCTYPE html>
+        <html lang="vi">
+        <head>
+            <meta charset="UTF-8">
+            <title>Đơn hàng hết hạn thanh toán - EventHub</title>
+            <style>
+                body { font-family: system-ui, sans-serif; background: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 90vh; margin: 0; }
+                .box { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 2.5rem; max-width: 480px; width: 100%; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.06); }
+                h2 { color: #dc2626; margin-top: 0; }
+                p { color: #64748b; font-size: 0.95rem; line-height: 1.5; }
+                .btn { display: inline-block; margin-top: 1.5rem; padding: 0.65rem 1.25rem; background: #2563eb; color: #fff; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 0.9rem; }
+            </style>
+        </head>
+        <body>
+            <div class="box">
+                <h2>⏰ Đơn hàng đã hết hạn thanh toán</h2>
+                <p>Thời gian giữ chỗ (10 phút) cho đơn hàng này đã kết thúc. Vé/chỗ ngồi đã được trả lại kho cho người khác.</p>
+                <p>Vui lòng quay lại ứng dụng để thực hiện đặt chỗ mới.</p>
+                <a class="btn" href="http://localhost:3000">Quay về trang EventHub</a>
+            </div>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html, status_code=400)
+
+    if payment.status != PaymentStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Giao dịch đã được xử lý (trạng thái: {payment.status}). Không thể tiếp tục thanh toán.",
+        )
+
     client_ip = request.client.host if request and request.client else "127.0.0.1"
     fresh_url = build_vnpay_payment_url(
         payment_code=payment.payment_code,
         amount_vnd=float(payment.amount),
-        order_desc=f"Thanh toan don dat ve {payment.payment_code}",
+        order_desc=f"Thanh toan don dat ve {payment.booking_id} - {payment.payment_code}",
         client_ip=client_ip,
     )
     return RedirectResponse(url=fresh_url, status_code=status.HTTP_302_FOUND)

@@ -311,15 +311,16 @@ body {
 }
 
 /* ==========================================================================
-   LAYOUT 2: ORGANIZER PORTAL (LEFT SIDEBAR + RIGHT WORKSPACE)
+   LAYOUT 2: ORGANIZER PORTAL (MODERN LEFT SIDEBAR + FULL WORKSPACE)
    ========================================================================== */
 .layout-organizer {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 260px 1fr;
   min-height: calc(100vh - 53px);
+  background: #f8fafc;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 960px) {
   .layout-organizer {
     grid-template-columns: 1fr;
   }
@@ -328,41 +329,75 @@ body {
 .organizer-aside {
   background: #ffffff;
   border-right: 1px solid var(--border);
-  padding: 1.5rem 1rem;
+  padding: 1.5rem 1.15rem;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
+  box-shadow: 1px 0 4px rgba(0, 0, 0, 0.02);
 }
 
 .organizer-menu-btn {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
   width: 100%;
   text-align: left;
-  padding: 0.6rem 0.85rem;
+  padding: 0.7rem 0.95rem;
   border-radius: var(--radius-sm);
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
   font-weight: 600;
-  font-size: 0.85rem;
+  font-size: 0.88rem;
   cursor: pointer;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.4rem;
+  transition: all 0.15s ease;
 }
 
 .organizer-menu-btn:hover {
-  background: var(--bg-page);
+  background: #f1f5f9;
   color: var(--text-main);
+  transform: translateX(2px);
 }
 
 .organizer-menu-btn.active {
-  background: var(--bg-subtle);
-  color: var(--text-main);
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
   font-weight: 700;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.08);
 }
 
 .organizer-content {
-  padding: 1.75rem 2rem;
-  max-width: 1120px;
+  padding: 2rem 2.5rem;
+  max-width: 1440px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* KPI Overview Cards for Studio */
+.org-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.org-kpi-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 1.15rem 1.25rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.org-kpi-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
 }
 
 /* ==========================================================================

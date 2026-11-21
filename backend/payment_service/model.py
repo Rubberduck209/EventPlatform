@@ -30,6 +30,7 @@ class PaymentStatus(str, enum.Enum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    EXPIRED = "EXPIRED"
 
 
 class RefundStatus(str, enum.Enum):

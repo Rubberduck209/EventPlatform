@@ -42,6 +42,8 @@ class EventCategory(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String(100), nullable=False)
     slug = Column(String(120), unique=True, nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
     events = relationship("Event", back_populates="category")
 
@@ -91,6 +93,7 @@ class EventZone(Base):
     grid_rows = Column(Integer, nullable=True)  # Số hàng ghế trong Grid Map Editor (nếu SEATED)
     grid_cols = Column(Integer, nullable=True)  # Số cột ghế trong Grid Map Editor (nếu SEATED)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
     event = relationship("Event", back_populates="zones")
     seats = relationship("Seat", back_populates="zone", cascade="all, delete-orphan")
@@ -114,6 +117,8 @@ class Seat(Base):
     seat_code = Column(String(20), nullable=False)    # A01, B12...
     is_disabled = Column(Boolean, default=False, nullable=False)  # Ghế bị tô đen (lối đi, cột nhà, ghế hỏng)
     seat_tier = Column(String(50), default="STANDARD", nullable=False)  # Hạng ghế phân màu (VIP, STANDARD, STUDENT)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
     zone = relationship("EventZone", back_populates="seats")
 
@@ -131,7 +136,10 @@ class TicketType(Base):
     max_per_order = Column(Integer, default=4, nullable=False)  # Chống đầu cơ: tối đa 4 vé/đơn
     is_student_only = Column(Boolean, default=False, nullable=False)  # Ràng buộc email trường học
     student_email_domain = Column(String(100), nullable=True)         # VD: @tdtu.edu.vn
+    sale_start_time = Column(DateTime, nullable=True)                 # Thời điểm bắt đầu mở bán loại vé
+    sale_end_time = Column(DateTime, nullable=True)                   # Thời điểm kết thúc bán loại vé (mặc định trước thời gian diễn ra sự kiện)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
     event = relationship("Event", back_populates="ticket_types")
     zone = relationship("EventZone", back_populates="ticket_types")
@@ -151,5 +159,7 @@ class TicketPricingRule(Base):
     price = Column(Numeric(12, 2), nullable=False)
     start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
     ticket_type = relationship("TicketType", back_populates="pricing_rules")
