@@ -521,15 +521,30 @@ def create_staff_account(
     db: Session = Depends(get_db)
 ):
     """Ban tổ chức tạo tài khoản riêng biệt cho Nhân viên (STAFF) thuộc quyền quản lý của mình."""
-    existing_user = db.query(User).filter(User.email == payload.email).first()
+    normalized_email = payload.email.strip().lower()
+    existing_user = db.query(User).filter(User.email.ilike(normalized_email)).first()
     if existing_user:
+        if existing_user.role == UserRole.STAFF:
+            if existing_user.created_by_organizer_id == current_user.id:
+                detail_msg = f"Email '{normalized_email}' đã có trong danh sách nhân sự của Ban tổ chức bạn rồi."
+            else:
+                detail_msg = (
+                    f"Email '{normalized_email}' đã được đăng ký làm nhân sự của một Ban tổ chức khác. "
+                    f"Mỗi tài khoản nhân viên chỉ thuộc về 1 Ban tổ chức duy nhất — vui lòng cấp email khác "
+                    f"(ví dụ: thêm hậu tố tên tổ chức của bạn)."
+                )
+        else:
+            detail_msg = (
+                f"Email '{normalized_email}' đã tồn tại trên hệ thống với vai trò '{existing_user.role.value}'. "
+                f"Vui lòng sử dụng một email riêng biệt để cấp tài khoản Nhân viên (STAFF)."
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Email '{payload.email}' đã tồn tại trong hệ thống với vai trò '{existing_user.role.value}'."
+            detail=detail_msg
         )
 
     new_staff = User(
-        email=payload.email,
+        email=normalized_email,
         password_hash=hash_password(payload.password),
         full_name=payload.full_name,
         phone=payload.phone,
@@ -604,11 +619,12 @@ def assign_event_staff(
     - RÀNG BUỘC 1: Chỉ cho phép phân công người có role là STAFF (không gán Customer).
     - RÀNG BUỘC 2: Mỗi Ban tổ chức chỉ được phân công nhân viên nằm trong danh sách nhân viên riêng của mình.
     """
-    staff_user = db.query(User).filter(User.email == payload.staff_email).first()
+    normalized_staff_email = payload.staff_email.strip().lower()
+    staff_user = db.query(User).filter(User.email.ilike(normalized_staff_email)).first()
     if not staff_user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Không tìm thấy tài khoản nhân viên với email '{payload.staff_email}'."
+            detail=f"Không tìm thấy tài khoản nhân viên với email '{normalized_staff_email}'."
         )
 
     if staff_user.role != UserRole.STAFF:

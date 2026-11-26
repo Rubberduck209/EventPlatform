@@ -26,6 +26,7 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
 
   // Ticket Service State (Port 8005)
   const [myTickets, setMyTickets] = useState([]);
+  const [zoomModalTicket, setZoomModalTicket] = useState(null);
   const [transferModalTicket, setTransferModalTicket] = useState(null);
   const [transferToUserId, setTransferToUserId] = useState('');
   const [transferToOwnerName, setTransferToOwnerName] = useState('');
@@ -665,7 +666,7 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
                 fetchMyTickets();
               }}
             >
-              Vé QR của tôi ({myTickets.length})
+              Vé của tôi ({myTickets.length})
             </button>
             <button
               type="button"
@@ -1233,7 +1234,7 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
                                   fetchMyTickets();
                                 }}
                               >
-                                🎟️ Vé QR
+                                🎟️ Vé của tôi
                               </button>
                             </div>
                           )}
@@ -1256,9 +1257,9 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
           <div className="card">
             <div className="card-header">
               <div>
-                <span className="card-title">Vé điện tử QR của tôi (Ticket Service - Cổng 8005)</span>
+                <span className="card-title">Vé của tôi (Ticket Service - Cổng 8005)</span>
                 <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                  Mỗi vé được gắn chữ ký số chống giả HMAC-SHA256. Khi sang nhượng vé, mã QR cũ tự động vô hiệu hóa.
+                  Mỗi vé điện tử được gắn chữ ký số chống giả HMAC-SHA256. Bấm "🔍 Zoom vé" để phóng to mã QR khi qua cổng soát vé.
                 </div>
               </div>
               <button
@@ -1313,6 +1314,8 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
 
                       <div style={{ display: 'flex', gap: '0.85rem', alignItems: 'center' }}>
                         <div
+                          onClick={() => setZoomModalTicket(t)}
+                          title="Bấm để phóng to Vé điện tử"
                           style={{
                             width: 112,
                             height: 112,
@@ -1324,6 +1327,7 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
+                            cursor: 'pointer',
                           }}
                         >
                           <img
@@ -1376,30 +1380,38 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
                         </div>
                       </div>
 
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', marginTop: 'auto' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.45rem', marginTop: 'auto', flexWrap: 'wrap' }}>
                         <button
                           type="button"
                           className="btn btn-outline"
-                          style={{ padding: '0.32rem 0.65rem', fontSize: '0.76rem', flex: 1 }}
+                          style={{ padding: '0.32rem 0.6rem', fontSize: '0.76rem', flex: 1, fontWeight: 600, color: '#1d4ed8', borderColor: '#93c5fd', background: '#eff6ff' }}
+                          onClick={() => setZoomModalTicket(t)}
+                        >
+                          🔍 Zoom vé
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          style={{ padding: '0.32rem 0.6rem', fontSize: '0.76rem', flex: 1 }}
                           onClick={() => {
                             navigator.clipboard?.writeText(t.qr_text);
                             setMsg({ text: `Đã sao chép chuỗi QR ký số của vé ${t.ticket_code}.`, type: 'success' });
                           }}
                         >
-                          📋 Copy chuỗi QR
+                          📋 Copy QR
                         </button>
                         {isIssued && (
                           <button
                             type="button"
                             className="btn btn-primary"
-                            style={{ padding: '0.32rem 0.65rem', fontSize: '0.76rem', flex: 1 }}
+                            style={{ padding: '0.32rem 0.6rem', fontSize: '0.76rem', flex: 1 }}
                             onClick={() => {
                               setTransferModalTicket(t);
                               setTransferToUserId('');
                               setTransferToOwnerName('');
                             }}
                           >
-                            ⇄ Sang nhượng vé
+                            ⇄ Sang nhượng
                           </button>
                         )}
                       </div>
@@ -1408,6 +1420,148 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
                 })}
               </div>
             )}
+
+            {zoomModalTicket && (() => {
+              const zt = zoomModalTicket;
+              const isIssued = zt.status === 'ISSUED';
+              const isCheckedIn = zt.status === 'CHECKED_IN';
+              const badgeClass = isIssued ? 'badge-APPROVED' : isCheckedIn ? 'badge-PENDING' : 'badge-REJECTED';
+              const statusLabel = isIssued ? 'HỢP LỆ (CHƯA QUA CỔNG)' : isCheckedIn ? 'ĐÃ CHECK-IN' : 'ĐÃ HỦY';
+              const evObj = events.find((e) => String(e.id) === String(zt.event_id));
+
+              return (
+                <div
+                  onClick={() => setZoomModalTicket(null)}
+                  style={{
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'rgba(15, 23, 42, 0.72)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 1200,
+                    padding: '1rem',
+                  }}
+                >
+                  <div
+                    className="card"
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      maxWidth: 460,
+                      width: '100%',
+                      margin: 0,
+                      padding: '1.35rem',
+                      borderRadius: 14,
+                      boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.85rem' }}>
+                      <div>
+                        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#2563eb', letterSpacing: '0.04em' }}>
+                          EVENTHUB E-TICKET PASS
+                        </div>
+                        <h3 style={{ fontSize: '1.1rem', fontWeight: 800, margin: '0.15rem 0 0', color: '#0f172a' }}>
+                          {evObj ? evObj.title : `Sự kiện #${zt.event_id}`}
+                        </h3>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        style={{ padding: '0.2rem 0.55rem', fontSize: '0.8rem' }}
+                        onClick={() => setZoomModalTicket(null)}
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
+                      <span className="mono" style={{ fontSize: '1rem', fontWeight: 800, color: '#1e293b' }}>
+                        {zt.ticket_code}
+                      </span>
+                      <span className={`badge ${badgeClass}`}>{statusLabel}</span>
+                    </div>
+
+                    {/* Khung QR phóng to chuẩn nét để Camera quét trực tiếp */}
+                    <div
+                      style={{
+                        background: '#ffffff',
+                        border: '2px solid #e2e8f0',
+                        borderRadius: 12,
+                        padding: '1rem',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        marginBottom: '1rem',
+                      }}
+                    >
+                      <img
+                        src={api.getTicketQrUrl(zt.ticket_code, zt.qr_version)}
+                        alt={zt.ticket_code}
+                        style={{ width: 270, height: 270, objectFit: 'contain', imageRendering: 'pixelated' }}
+                      />
+                      <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.5rem', textAlign: 'center' }}>
+                        Đưa mã QR này trước Camera quét vé tại cổng sự kiện (Phiên bản QR: <strong className="mono">v{zt.qr_version}</strong>)
+                      </div>
+                    </div>
+
+                    {/* Thông tin chi tiết vé */}
+                    <div
+                      style={{
+                        background: '#f8fafc',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: 10,
+                        padding: '0.85rem 1rem',
+                        fontSize: '0.84rem',
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: '0.6rem',
+                        marginBottom: '1rem',
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Chủ sở hữu</div>
+                        <strong>{zt.owner_name}</strong>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Vị trí / Hạng vé</div>
+                        <strong>{zt.seat_id ? `Ghế ${zt.seat_id}` : 'Vé đứng'} (Hạng #{zt.ticket_type_id})</strong>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Mã đơn đặt vé</div>
+                        <strong>#{zt.booking_id}</strong>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Thời gian phát hành</div>
+                        <strong>{zt.issued_at ? new Date(zt.issued_at).toLocaleString('vi-VN') : '-'}</strong>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        style={{ flex: 1, padding: '0.5rem' }}
+                        onClick={() => {
+                          navigator.clipboard?.writeText(zt.qr_text);
+                          setMsg({ text: `Đã sao chép chuỗi QR ký số của vé ${zt.ticket_code}.`, type: 'success' });
+                        }}
+                      >
+                        📋 Copy chuỗi QR
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        style={{ flex: 1, padding: '0.5rem' }}
+                        onClick={() => setZoomModalTicket(null)}
+                      >
+                        Đóng cửa sổ
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {transferModalTicket && (
               <div

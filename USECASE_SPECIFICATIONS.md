@@ -124,15 +124,15 @@ Tài liệu đặc tả **16 Use Cases cốt lõi** (bao phủ đầy đủ 100%
 
 | Thuộc tính | Đặc tả |
 | :--- | :--- |
-| Mục tiêu | Cho phép mỗi Ban tổ chức quản lý danh sách nhân viên độc lập của riêng mình và phân công nhân viên vào trực từng sự kiện kèm quyền hạn cụ thể. |
+| Mục tiêu | Cho phép mỗi Ban tổ chức quản lý danh sách nhân viên độc lập của riêng mình (tách biệt tuyệt đối giữa các tổ chức) và phân công nhân viên vào trực từng sự kiện kèm quyền hạn cụ thể. |
 | Primary actor | Organizer. |
 | Supporting actors | Frontend React, Identity Service (`:8001`). |
 | Offstage actors | Không có. |
 | Tiền điều kiện | Đã đăng nhập với vai trò Ban tổ chức. |
 | Kích hoạt | Mở mục Nhân sự để thêm/xóa nhân viên hoặc chọn phân công/gỡ phân công khỏi sự kiện. |
-| Luồng chính | 1) Hệ thống hiển thị danh sách nhân viên riêng của Ban tổ chức theo thứ tự `#1, #2, #3...`. 2) Ban tổ chức thêm nhân viên mới hoặc xóa nhân viên thuộc quyền quản lý của mình. 3) Tại mục Phân công, chọn sự kiện, nhân viên, nhập vị trí trực và cấp quyền (soát vé, tra cứu khách). 4) Cho phép gỡ phân công khỏi sự kiện mà vẫn giữ tài khoản nhân viên. |
-| Ngoại lệ | Email nhân viên đã tồn tại hoặc cố thao tác trên nhân viên thuộc tổ chức khác: báo lỗi và từ chối. |
-| Hậu điều kiện | Danh sách nhân sự độc lập và bảng phân công theo sự kiện được cập nhật chính xác. |
+| Luồng chính | 1) Hệ thống hiển thị danh sách nhân viên riêng của Ban tổ chức theo thứ tự độc lập `#1, #2, #3...`. 2) Ban tổ chức thêm tài khoản nhân viên mới (mỗi tài khoản nhân viên chỉ thuộc về duy nhất 1 Ban tổ chức tạo ra nó) hoặc xóa nhân viên thuộc quyền quản lý của mình. 3) Tại mục Phân công, chọn sự kiện, chọn nhân viên trong danh sách riêng, nhập vị trí trực và cấp quyền (soát vé, tra cứu khách). 4) Cho phép gỡ phân công khỏi sự kiện mà vẫn giữ tài khoản nhân viên trong danh sách tổ chức. |
+| Ngoại lệ | Email nhân viên bị trùng với nhân sự đã có của chính đơn vị, trùng với nhân sự đã đăng ký bởi một Ban tổ chức khác (yêu cầu cấp email riêng có hậu tố tổ chức), trùng với tài khoản Khách hàng/Quản trị viên, hoặc cố thao tác/phân công nhân viên thuộc tổ chức khác: báo lỗi chi tiết và từ chối. |
+| Hậu điều kiện | Danh sách nhân sự độc lập của từng Ban tổ chức và bảng phân công theo sự kiện được cập nhật chính xác. |
 
 ---
 
@@ -179,8 +179,8 @@ Tài liệu đặc tả **16 Use Cases cốt lõi** (bao phủ đầy đủ 100%
 | Supporting actors | Frontend React, Booking Service (`:8003`). |
 | Offstage actors | Các khách hàng khác đang chờ mua vé. |
 | Tiền điều kiện | Đơn hàng đang ở trạng thái chờ thanh toán. |
-| Kích hoạt | Khách hàng nhấn Hủy giữ chỗ, hoặc Bộ định thời phát hiện đơn đã quá hạn 10 phút. |
-| Luồng chính | 1) Hệ thống kiểm tra quyền hủy của người dùng hoặc mốc hết hạn của đơn. 2) Cập nhật trạng thái đơn sang Đã hủy hoặc Hết hạn. 3) Mở khóa toàn bộ ghế đang giữ và trả lại số lượng vé đứng về kho. 4) Ẩn thao tác thanh toán đối với đơn đã hết hạn/hủy. |
+| Kích hoạt | Khách hàng nhấn Hủy giữ chỗ, hoặc tác vụ nền (Background Task Scheduler) tự động phát hiện đơn đã quá hạn 10 phút. |
+| Luồng chính | 1) Hệ thống kiểm tra quyền hủy của người dùng hoặc mốc hết hạn 10 phút của đơn. 2) Cập nhật trạng thái đơn sang Đã hủy hoặc Hết hạn. 3) Mở khóa toàn bộ ghế đang giữ và trả lại số lượng vé đứng về kho. 4) Ẩn thao tác thanh toán đối với đơn đã hết hạn/hủy. |
 | Ngoại lệ | Đơn đã thanh toán thành công trước đó hoặc người hủy không phải chủ đơn: từ chối thao tác. |
 | Hậu điều kiện | Chỗ ngồi và số lượng vé được trả lại trạng thái còn trống cho người khác đặt. |
 
@@ -204,19 +204,19 @@ Tài liệu đặc tả **16 Use Cases cốt lõi** (bao phủ đầy đủ 100%
 
 ## PHÂN HỆ 4: VÉ ĐIỆN TỬ & CHECK-IN (TICKET SERVICE)
 
-### UC-13 — Quản lý vé điện tử (Xem vé & Sang nhượng)
+### UC-13 — Quản lý vé điện tử (Xem vé, Zoom vé QR & Sang nhượng)
 
 | Thuộc tính | Đặc tả |
 | :--- | :--- |
-| Mục tiêu | Cho phép Khách hàng xem thông tin, mã QR của các vé mình sở hữu và chuyển nhượng vé hợp lệ sang người khác. |
+| Mục tiêu | Cho phép Khách hàng xem thông tin vé trong tab "Vé của tôi", phóng lớn (Zoom) thẻ vé điện tử kèm mã QR độ nét cao để quét tại cổng và chuyển nhượng vé hợp lệ sang người khác. |
 | Primary actor | Customer. |
 | Supporting actors | Frontend React, Ticket Service (`:8005`), Booking Service (`:8003`), Notification Service (`:8006`). |
 | Offstage actors | Ban tổ chức sự kiện. |
 | Tiền điều kiện | Đã đăng nhập; có vé đã phát hành thuộc sở hữu của Khách hàng. |
-| Kích hoạt | Mở tab Vé QR của tôi để xem vé, hoặc chọn Sang nhượng vé trên thẻ vé chưa sử dụng. |
-| Luồng chính | 1) Hệ thống đồng bộ và hiển thị danh sách vé kèm mã QR, vị trí chỗ ngồi và trạng thái vé. 2) Nếu khách chọn Sang nhượng vé: nhập thông tin người nhận và xác nhận. 3) Hệ thống kiểm tra vé hợp lệ, chuyển chủ sở hữu sang người nhận, vô hiệu hóa mã QR cũ và cấp mã QR mới. 4) Ghi nhận lịch sử chuyển nhượng và gửi thông báo cho người nhận (gọi kèm UC-15). |
+| Kích hoạt | Mở tab "Vé của tôi", nhấn nút "🔍 Zoom vé" trên thẻ vé, hoặc chọn "Sang nhượng vé" đối với vé chưa sử dụng. |
+| Luồng chính | 1) Hệ thống đồng bộ và hiển thị danh sách vé kèm ảnh mã QR chuẩn ISO/IEC 18004, vị trí chỗ ngồi và trạng thái vé. 2) Khi khách nhấn "🔍 Zoom vé": hệ thống mở cửa sổ phóng lớn Vé điện tử trên nền sáng tương phản cao kèm chi tiết ghế/khu vực và nút sao chép chuỗi QR để thuận tiện đưa vào camera soát vé. 3) Khi khách chọn "Sang nhượng vé": nhập thông tin người nhận và xác nhận; hệ thống chuyển chủ sở hữu, vô hiệu hóa mã QR cũ, cấp mã QR mới (`qr_version + 1`), ghi lịch sử chuyển nhượng và gửi thông báo cho người nhận (gọi kèm UC-15). |
 | Ngoại lệ | Chuyển vé cho chính mình, không phải chủ vé hoặc vé đã check-in/đã hủy: từ chối chuyển nhượng. |
-| Hậu điều kiện | Khách hàng xem được vé để vào cổng; nếu sang nhượng thì vé thuộc về người nhận với mã QR mới. |
+| Hậu điều kiện | Khách hàng xem hoặc phóng to được vé điện tử để check-in nhanh chóng; nếu sang nhượng thì vé thuộc về người nhận với mã QR mới. |
 
 ---
 
@@ -224,15 +224,15 @@ Tài liệu đặc tả **16 Use Cases cốt lõi** (bao phủ đầy đủ 100%
 
 | Thuộc tính | Đặc tả |
 | :--- | :--- |
-| Mục tiêu | Cho phép nhân viên sự kiện quét mã QR xác thực vé vào cổng (chống vé giả, vé trùng) và tra cứu danh sách khách tham dự theo quyền được cấp. |
+| Mục tiêu | Cho phép nhân viên sự kiện quét mã QR qua Camera trực tiếp (hoặc ảnh QR / mã vé) để tự động xác thực vé vào cổng tức thời (chống vé giả, vé trùng) và tra cứu danh sách khách tham dự theo quyền được cấp. |
 | Primary actor | Event Staff. |
 | Supporting actors | Frontend React, Ticket Service (`:8005`), Identity Service (`:8001`), Reporting Service (`:8007`). |
 | Offstage actors | Ban tổ chức sự kiện, Bộ phận Kế toán Sàn. |
-| Tiền điều kiện | Đã đăng nhập với vai trò Nhân viên và được phân công quyền tương ứng tại sự kiện. |
-| Kích hoạt | Mở màn hình Soát vé, tìm kiếm khách trong danh sách hoặc quét mã vé và nhấn Xác thực vé. |
-| Luồng chính | 1) Hệ thống tải danh sách khách tham dự và trạng thái vào cổng của sự kiện nhân viên đang trực. 2) Nhân viên nhập hoặc quét mã vé của khách. 3) Hệ thống kiểm tra chữ ký vé, đúng sự kiện và vé chưa từng qua cổng. 4) Đánh dấu vé đã vào cổng, ghi nhật ký soát vé và cộng lượt tham dự sang hệ thống báo cáo. |
-| Ngoại lệ | Vé giả, sai sự kiện, vé đã hủy, mã QR cũ sau chuyển nhượng hoặc vé đã check-in trước đó: từ chối cho vào cổng, cảnh báo lỗi và lưu nhật ký quét lỗi. Không có quyền tương ứng: khóa chức năng. |
-| Hậu điều kiện | Vé hợp lệ được ghi nhận đã check-in một lần duy nhất; danh sách khách cập nhật trạng thái tức thời. |
+| Tiền điều kiện | Đã đăng nhập với vai trò Nhân viên và được phân công quyền tương ứng (`CHECKIN`, `VIEW_ATTENDEES`) tại sự kiện. |
+| Kích hoạt | Mở màn hình Soát vé, bật cửa sổ "📷 Mở Camera Quét QR", chọn ảnh QR từ máy, nhấn "Quét QR →" từ danh sách khách hoặc dán/nhập mã vé. |
+| Luồng chính | 1) Hệ thống tải danh sách khách tham dự và trạng thái vào cổng của sự kiện nhân viên đang trực. 2) Nhân viên mở cửa sổ Camera để đưa mã QR của khách vào khung ngắm (hệ thống tự động chọn camera vật lý, chỉ hiện tùy chọn đổi camera khi thiết bị có từ 2 camera trở lên và hỗ trợ đọc cả khung hình webcam lật gương), hoặc tải ảnh QR / dán mã QR. 3) Ngay khi nhận diện được mã QR, hệ thống tự động đóng cửa sổ camera và kích hoạt xác thực tức thời (không cần bấm nút xác thực thủ công): kiểm tra chữ ký HMAC-SHA256, phiên bản QR, đúng sự kiện và vé chưa từng qua cổng. 4) Đánh dấu vé đã vào cổng (`USED`), ghi nhật ký soát vé và cộng lượt tham dự sang hệ thống báo cáo. |
+| Ngoại lệ | Vé giả, sai sự kiện, vé đã hủy, mã QR cũ sau chuyển nhượng hoặc vé đã check-in trước đó: từ chối cho vào cổng, hiển thị cảnh báo đỏ và lưu nhật ký quét lỗi. Thiết bị không có camera hoặc chưa cấp quyền camera: cho phép chọn file ảnh QR hoặc dán mã để tự động xác thực. Không có quyền tương ứng: khóa chức năng. |
+| Hậu điều kiện | Vé hợp lệ được tự động ghi nhận check-in ngay sau khi quét một lần duy nhất; danh sách khách cập nhật trạng thái tức thời. |
 
 ---
 
@@ -243,11 +243,11 @@ Tài liệu đặc tả **16 Use Cases cốt lõi** (bao phủ đầy đủ 100%
 | Thuộc tính | Đặc tả |
 | :--- | :--- |
 | Mục tiêu | Tự động gửi email thông báo theo các sự kiện nghiệp vụ, thử lại khi gặp lỗi đường truyền và nhắc lịch tham dự trước giờ khai mạc 24 giờ. |
-| Primary actor | Không có (tự động kích hoạt ngầm từ UC-04, UC-07, UC-09, UC-10, UC-12, UC-13). |
+| Primary actor | Không có (tự động kích hoạt ngầm từ UC-04, UC-07, UC-09, UC-10, UC-12, UC-13 hoặc tác vụ nền Task Scheduler). |
 | Supporting actors | Notification Service (`:8006`), Event Service (`:8002`), Ticket Service (`:8005`), SMTP Mail Server. |
 | Offstage actors | Khách hàng tham dự sự kiện. |
 | Tiền điều kiện | Có mẫu thông báo phù hợp và địa chỉ nhận hợp lệ. |
-| Kích hoạt | Nhận thông báo sự kiện từ các dịch vụ khác hoặc chu kỳ quét định kỳ của Bộ định thời. |
+| Kích hoạt | Nhận yêu cầu thông báo từ các dịch vụ nghiệp vụ khác hoặc chu kỳ quét tự động của tác vụ nền (Background Task Scheduler). |
 | Luồng chính | 1) Lấy mẫu thông báo và ghép nội dung chi tiết tương ứng. 2) Với nhắc lịch 24h: tìm các sự kiện sắp diễn ra và danh sách người giữ vé hợp lệ. 3) Gửi email tới người nhận và lưu nhật ký kết quả. 4) Nếu gửi lỗi tạm thời, tự động xếp hàng thử lại ở lần quét kế tiếp. |
 | Ngoại lệ | Sự kiện đã hủy, vé đã hoàn tiền hoặc lỗi gửi vượt số lần thử lại: bỏ qua gửi nhắc hoặc đánh dấu thất bại. |
 | Hậu điều kiện | Người dùng nhận được đầy đủ thông báo kịp thời và lịch sử gửi được lưu vết. |
@@ -263,7 +263,7 @@ Tài liệu đặc tả **16 Use Cases cốt lõi** (bao phủ đầy đủ 100%
 | Supporting actors | Frontend React, Reporting Service (`:8007`). |
 | Offstage actors | Cơ quan Thuế & Pháp lý Nhà nước, Bộ phận Kế toán Sàn. |
 | Tiền điều kiện | Đã đăng nhập đúng vai trò (Ban tổ chức hoặc Quản trị viên); sự kiện đã kết thúc đối với bước quyết toán. |
-| Kích hoạt | Mở màn hình Dashboard thống kê/báo cáo hoặc Bộ định thời phát hiện sự kiện vừa kết thúc. |
+| Kích hoạt | Mở màn hình Dashboard thống kê/báo cáo hoặc hệ thống tự động tổng hợp khi sự kiện kết thúc. |
 | Luồng chính | 1) Với Ban tổ chức: xem doanh thu gộp/ròng, tiền hoàn, tốc độ bán theo ngày, số vé bán/còn lại và tỷ lệ check-in cho các sự kiện của chính mình. 2) Khi sự kiện kết thúc: hệ thống tự động lập bản kê quyết toán (tổng thu trừ phí nền tảng để tính tiền chuyển cho Ban tổ chức). 3) Với Quản trị viên: xem thống kê tổng quan toàn sàn và kiểm tra, duyệt chi trả các bản kê quyết toán. |
 | Ngoại lệ | Truy cập báo cáo không thuộc quyền hạn: từ chối. Sự kiện chưa có giao dịch: hiển thị giá trị bằng 0. |
 | Hậu điều kiện | Ban tổ chức nắm bắt được hiệu quả sự kiện; Quản trị viên kiểm soát và phê duyệt quyết toán tài chính minh bạch. |
