@@ -497,51 +497,26 @@ async def vnpay_ipn_post(request: Request, db: Session = Depends(get_db)):
     return process_vnpay_ipn_params(params, db)
 
 
-@app.get("/api/v1/payments/vnpay-return", response_class=HTMLResponse, tags=["VNPay Webhook & IPN"])
+@app.get("/api/v1/payments/vnpay-return", tags=["VNPay Webhook & IPN"])
 def vnpay_return_page(request: Request, db: Session = Depends(get_db)):
     """
-    Return URL: Trang hiển thị kết quả cho trình duyệt khách hàng sau khi thanh toán xong trên VNPay Sandbox.
-    Đồng thời cập nhật trạng thái đơn hàng nếu IPN chưa kịp gọi tới.
+    Return URL: Sau khi khách hàng thanh toán xong trên VNPay Sandbox,
+    xác thực chữ ký + cập nhật đơn hàng và redirect trực tiếp về trang web Frontend.
     """
+    import urllib.parse
+
     params = dict(request.query_params)
     is_valid_sig = verify_vnpay_signature(params)
     txn_ref = params.get("vnp_TxnRef", "")
     resp_code = params.get("vnp_ResponseCode", "")
-    frontend_url = os.getenv("FRONTEND_RETURN_URL", "http://localhost:3000")
+    frontend_url = os.getenv("FRONTEND_RETURN_URL", "http://localhost:3000").rstrip("/")
 
     if is_valid_sig and txn_ref:
         process_vnpay_ipn_params(params, db)
 
-    status_title = "Thanh toán Thành công!" if (is_valid_sig and resp_code == "00") else "Giao dịch Không thành công"
-    status_color = "#16a34a" if (is_valid_sig and resp_code == "00") else "#dc2626"
-    sig_note = "Hợp lệ (HMAC-SHA512 Verified)" if is_valid_sig else "Chữ ký không hợp lệ!"
-
-    html = f"""
-    <!DOCTYPE html>
-    <html lang="vi">
-    <head>
-        <meta charset="UTF-8" />
-        <title>Kết quả thanh toán VNPay - EventHub</title>
-        <style>
-            body {{ font-family: system-ui, sans-serif; background: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 95vh; margin: 0; }}
-            .box {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 2rem; max-width: 480px; width: 100%; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }}
-            h2 {{ color: {status_color}; margin-top: 0; }}
-            .row {{ display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid #f1f5f9; font-size: 0.9rem; }}
-            .btn {{ display: inline-block; margin-top: 1.25rem; padding: 0.6rem 1.2rem; background: #2563eb; color: #fff; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 0.9rem; }}
-        </style>
-    </head>
-    <body>
-        <div class="box">
-            <h2>{status_title}</h2>
-            <div class="row"><span>Mã giao dịch (vnp_TxnRef):</span><strong>{txn_ref}</strong></div>
-            <div class="row"><span>Mã phản hồi VNPay:</span><strong>{resp_code}</strong></div>
-            <div class="row"><span>Kiểm tra chữ ký số:</span><strong>{sig_note}</strong></div>
-            <a class="btn" href="{frontend_url}">← Quay về trang ứng dụng EventHub</a>
-        </div>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html)
+    payment_status = "success" if (is_valid_sig and resp_code == "00") else "failed"
+    redirect_target = f"{frontend_url}/?vnpay_status={payment_status}&payment_code={urllib.parse.quote(txn_ref)}"
+    return RedirectResponse(url=redirect_target, status_code=status.HTTP_302_FOUND)
 
 
 @app.post("/api/v1/payments/simulate-vnpay-ipn", response_model=VNPayIPNResponse, tags=["VNPay Webhook & IPN"])

@@ -24,6 +24,13 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
   const [seatStatus, setSeatStatus] = useState({ held: [], sold: [] });
   const [standingAvailability, setStandingAvailability] = useState([]);
 
+  // Ticket Service State (Port 8005)
+  const [myTickets, setMyTickets] = useState([]);
+  const [transferModalTicket, setTransferModalTicket] = useState(null);
+  const [transferToUserId, setTransferToUserId] = useState('');
+  const [transferToOwnerName, setTransferToOwnerName] = useState('');
+  const [transferringTicket, setTransferringTicket] = useState(false);
+
   // Payments State
   const [myPayments, setMyPayments] = useState([]);
   const [payLoading, setPayLoading] = useState(false);
@@ -84,6 +91,54 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
       setMyBookings(list || []);
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const fetchMyTickets = async () => {
+    try {
+      // Đồng bộ phát hành vé tự động cho các đơn đã CONFIRMED nhưng chưa sinh vé
+      const bookingsList = await api.getUserBookings(user.id).catch(() => myBookings);
+      const confirmedList = (bookingsList || []).filter((b) => b.status === 'CONFIRMED');
+      let ticketsList = await api.getUserTickets(user.id).catch(() => []);
+      const existingBookingIds = new Set((ticketsList || []).map((t) => Number(t.booking_id)));
+      const missingBookings = confirmedList.filter((b) => !existingBookingIds.has(Number(b.booking_id)));
+      if (missingBookings.length > 0) {
+        await Promise.all(
+          missingBookings.map((b) =>
+            api.ensureBookingTickets(b.booking_id, cleanName(user.full_name) || user.email).catch(() => null)
+          )
+        );
+        ticketsList = await api.getUserTickets(user.id).catch(() => ticketsList);
+      }
+      setMyTickets(ticketsList || []);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleTransferTicket = async (e) => {
+    e.preventDefault();
+    if (!transferModalTicket || !transferToUserId.trim() || !transferToOwnerName.trim()) return;
+    setTransferringTicket(true);
+    setMsg({ text: '', type: '' });
+    try {
+      const res = await api.transferTicket(transferModalTicket.ticket_code, {
+        from_user_id: String(user.id),
+        to_user_id: transferToUserId.trim(),
+        to_owner_name: transferToOwnerName.trim(),
+      });
+      setMsg({
+        text: res.message || `Đã chuyển nhượng vé ${transferModalTicket.ticket_code} cho ${transferToOwnerName.trim()}. Mã QR cũ đã bị vô hiệu hóa!`,
+        type: 'success',
+      });
+      setTransferModalTicket(null);
+      setTransferToUserId('');
+      setTransferToOwnerName('');
+      await fetchMyTickets();
+    } catch (err) {
+      setMsg({ text: err.message, type: 'error' });
+    } finally {
+      setTransferringTicket(false);
     }
   };
 
@@ -524,6 +579,27 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
     fetchPublicEvents();
     fetchMyPayments();
     fetchMyBookings();
+    fetchMyTickets();
+
+    const params = new URLSearchParams(window.location.search);
+    const vnpayStatus = params.get('vnpay_status');
+    const payCode = params.get('payment_code');
+    if (vnpayStatus) {
+      window.history.replaceState({}, '', window.location.pathname);
+      if (vnpayStatus === 'success') {
+        setTab('tickets');
+        setMsg({
+          text: `Thanh toán VNPay thành công${payCode ? ` (Mã GD: ${payCode})` : ''}! Vé điện tử QR của bạn đã được phát hành.`,
+          type: 'success',
+        });
+      } else {
+        setTab('bookings');
+        setMsg({
+          text: 'Giao dịch thanh toán VNPay không thành công hoặc đã bị hủy.',
+          type: 'error',
+        });
+      }
+    }
   }, [user]);
 
   const handleSubmit = async (e) => {
@@ -580,6 +656,16 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
               }}
             >
               Đơn giữ chỗ
+            </button>
+            <button
+              type="button"
+              className={`portal-switch-btn ${tab === 'tickets' ? 'active' : ''}`}
+              onClick={() => {
+                setTab('tickets');
+                fetchMyTickets();
+              }}
+            >
+              Vé QR của tôi ({myTickets.length})
             </button>
             <button
               type="button"
@@ -1134,9 +1220,22 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
                             </div>
                           )}
                           {isConfirmed && (
-                            <span style={{ fontSize: '0.78rem', color: 'var(--success)', fontWeight: 600 }}>
-                              ✓ Đã thanh toán
-                            </span>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                              <span style={{ fontSize: '0.78rem', color: 'var(--success)', fontWeight: 600 }}>
+                                ✓ Đã thanh toán
+                              </span>
+                              <button
+                                type="button"
+                                className="btn btn-outline"
+                                style={{ padding: '0.24rem 0.6rem', fontSize: '0.74rem' }}
+                                onClick={() => {
+                                  setTab('tickets');
+                                  fetchMyTickets();
+                                }}
+                              >
+                                🎟️ Vé QR
+                              </button>
+                            </div>
                           )}
                           {isExpired && (
                             <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
@@ -1150,6 +1249,233 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
                 )}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {tab === 'tickets' && (
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <span className="card-title">Vé điện tử QR của tôi (Ticket Service - Cổng 8005)</span>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                  Mỗi vé được gắn chữ ký số chống giả HMAC-SHA256. Khi sang nhượng vé, mã QR cũ tự động vô hiệu hóa.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-outline"
+                style={{ padding: '0.3rem 0.7rem', fontSize: '0.78rem' }}
+                onClick={fetchMyTickets}
+              >
+                ↻ Làm mới
+              </button>
+            </div>
+
+            {myTickets.length === 0 ? (
+              <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2.5rem' }}>
+                Chưa có vé điện tử nào được phát hành. Hãy đặt vé và hoàn tất thanh toán để nhận vé QR!
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '1rem' }}>
+                {myTickets.map((t) => {
+                  const isIssued = t.status === 'ISSUED';
+                  const isCheckedIn = t.status === 'CHECKED_IN';
+                  const isCancelled = t.status === 'CANCELLED';
+                  const badgeClass = isIssued ? 'badge-APPROVED' : isCheckedIn ? 'badge-PENDING' : 'badge-REJECTED';
+                  const statusLabel = isIssued ? 'HỢP LỆ (CHƯA QUA CỔNG)' : isCheckedIn ? 'ĐÃ CHECK-IN' : 'ĐÃ HỦY';
+                  const evObj = events.find((e) => String(e.id) === String(t.event_id));
+
+                  return (
+                    <div
+                      key={t.ticket_code}
+                      style={{
+                        border: '1px solid var(--border)',
+                        borderRadius: 10,
+                        padding: '1rem',
+                        background: isCancelled ? '#f8fafc' : '#fff',
+                        opacity: isCancelled ? 0.75 : 1,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.75rem',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+                        <div>
+                          <div className="mono" style={{ fontWeight: 700, fontSize: '0.9rem', color: '#1e293b' }}>
+                            {t.ticket_code}
+                          </div>
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                            {evObj ? evObj.title : `Sự kiện #${t.event_id}`} • Đơn #{t.booking_id}
+                          </div>
+                        </div>
+                        <span className={`badge ${badgeClass}`}>{statusLabel}</span>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '0.85rem', alignItems: 'center' }}>
+                        <div
+                          style={{
+                            width: 112,
+                            height: 112,
+                            border: '1px solid #e2e8f0',
+                            borderRadius: 8,
+                            padding: 4,
+                            background: '#fff',
+                            flexShrink: 0,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <img
+                            src={api.getTicketQrUrl(t.ticket_code, t.qr_version)}
+                            alt={t.ticket_code}
+                            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                          />
+                        </div>
+
+                        <div style={{ fontSize: '0.8rem', flex: 1, display: 'flex', flexDirection: 'column', gap: '0.28rem' }}>
+                          <div>
+                            <span style={{ color: 'var(--text-muted)' }}>Chủ vé: </span>
+                            <strong>{t.owner_name}</strong>
+                          </div>
+                          <div>
+                            <span style={{ color: 'var(--text-muted)' }}>Vị trí: </span>
+                            <strong>{t.seat_id ? `Ghế ${t.seat_id}` : 'Vé đứng'}</strong> (Hạng #{t.ticket_type_id})
+                          </div>
+                          <div>
+                            <span style={{ color: 'var(--text-muted)' }}>Phiên bản QR: </span>
+                            <span className="mono">v{t.qr_version}</span>
+                          </div>
+                          <div>
+                            <span style={{ color: 'var(--text-muted)' }}>Phát hành: </span>
+                            <span>{t.issued_at ? new Date(t.issued_at).toLocaleString('vi-VN') : '-'}</span>
+                          </div>
+                          {isCheckedIn && t.checked_in_at && (
+                            <div style={{ color: '#16a34a', fontWeight: 600 }}>
+                              ✓ Vào cổng: {new Date(t.checked_in_at).toLocaleString('vi-VN')}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div style={{ background: '#f8fafc', padding: '0.45rem 0.6rem', borderRadius: 6, border: '1px dashed #cbd5e1' }}>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 2 }}>
+                          Chuỗi QR ký số (Dùng để quét tại cổng Check-in):
+                        </div>
+                        <div
+                          className="mono"
+                          style={{
+                            fontSize: '0.7rem',
+                            wordBreak: 'break-all',
+                            maxHeight: 36,
+                            overflow: 'hidden',
+                            color: '#334155',
+                          }}
+                        >
+                          {t.qr_text}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', marginTop: 'auto' }}>
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          style={{ padding: '0.32rem 0.65rem', fontSize: '0.76rem', flex: 1 }}
+                          onClick={() => {
+                            navigator.clipboard?.writeText(t.qr_text);
+                            setMsg({ text: `Đã sao chép chuỗi QR ký số của vé ${t.ticket_code}.`, type: 'success' });
+                          }}
+                        >
+                          📋 Copy chuỗi QR
+                        </button>
+                        {isIssued && (
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            style={{ padding: '0.32rem 0.65rem', fontSize: '0.76rem', flex: 1 }}
+                            onClick={() => {
+                              setTransferModalTicket(t);
+                              setTransferToUserId('');
+                              setTransferToOwnerName('');
+                            }}
+                          >
+                            ⇄ Sang nhượng vé
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {transferModalTicket && (
+              <div
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  background: 'rgba(15, 23, 42, 0.55)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  zIndex: 1100,
+                  padding: '1rem',
+                }}
+              >
+                <div className="card" style={{ maxWidth: 440, width: '100%', margin: 0 }}>
+                  <div className="card-header">
+                    <span className="card-title">Sang nhượng vé {transferModalTicket.ticket_code}</span>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      style={{ padding: '0.2rem 0.55rem', fontSize: '0.75rem' }}
+                      onClick={() => setTransferModalTicket(null)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <form onSubmit={handleTransferTicket}>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.85rem' }}>
+                      Lưu ý: Sau khi chuyển nhượng, <strong>mã QR hiện tại (v{transferModalTicket.qr_version}) sẽ bị vô hiệu hóa ngay lập tức</strong> và hệ thống sẽ cấp mã QR mới (v{transferModalTicket.qr_version + 1}) cho người nhận.
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">ID tài khoản người nhận (User ID)</label>
+                      <input
+                        type="text"
+                        required
+                        className="form-input"
+                        placeholder="VD: 2 hoặc ID người nhận..."
+                        value={transferToUserId}
+                        onChange={(e) => setTransferToUserId(e.target.value)}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Họ và tên người nhận in trên vé</label>
+                      <input
+                        type="text"
+                        required
+                        className="form-input"
+                        placeholder="Nhập họ tên người nhận..."
+                        value={transferToOwnerName}
+                        onChange={(e) => setTransferToOwnerName(e.target.value)}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1rem' }}>
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        onClick={() => setTransferModalTicket(null)}
+                      >
+                        Hủy
+                      </button>
+                      <button type="submit" className="btn btn-primary" disabled={transferringTicket}>
+                        {transferringTicket ? 'Đang chuyển...' : 'Xác nhận chuyển vé'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1221,12 +1547,10 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
                             <div style={{ display: 'inline-flex', gap: '0.4rem' }}>
                               <a
                                 href={`http://localhost:8004/api/v1/payments/${p.id}/checkout`}
-                                target="_blank"
-                                rel="noreferrer"
                                 className="btn btn-primary"
                                 style={{ padding: '0.28rem 0.65rem', fontSize: '0.76rem', textDecoration: 'none' }}
                               >
-                                Mở VNPay ↗
+                                Mở VNPay →
                               </a>
                               <button
                                 type="button"
@@ -1500,9 +1824,8 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
                   </div>
                 </div>
 
-                {/* Hai hình thức thanh toán */}
+                {/* Nút chuyển sang cổng thanh toán VNPay */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.15rem' }}>
-                  {/* Cách 1: Nút sang Cổng VNPay Sandbox */}
                   <button
                     type="button"
                     className="btn btn-primary"
@@ -1519,30 +1842,16 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
                     }}
                     onClick={() => {
                       if (paymentModal.payment?.payment_url) {
-                        window.open(paymentModal.payment.payment_url, '_blank', 'noopener,noreferrer');
+                        window.location.href = paymentModal.payment.payment_url;
                       }
                     }}
                     disabled={payRemainingSec === 0}
                   >
-                    <span>💳 Thanh toán qua VNPay</span>
-                    <span style={{ fontSize: '0.78rem', opacity: 0.85 }}>↗</span>
+                    <span>💳 Thanh toán qua VNPay →</span>
                   </button>
 
-                  {/* Thông tin thẻ Test VNPay */}
-                  <div style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 6, padding: '0.65rem 0.85rem', fontSize: '0.76rem', color: '#334155' }}>
-                    <div style={{ fontWeight: 700, color: '#0f172a', marginBottom: 2 }}>
-                      Thẻ test NCB (VNPay):
-                    </div>
-                    <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                      <span>Số thẻ: <strong className="mono">9704198526191432198</strong></span>
-                      <span>Tên: <strong className="mono">NGUYEN VAN A</strong></span>
-                      <span>Ngày: <strong className="mono">07/15</strong></span>
-                      <span>OTP: <strong className="mono">123456</strong></span>
-                    </div>
-                  </div>
-
-                  <div style={{ textAlign: 'center', fontSize: '0.78rem', color: '#64748b', padding: '0.35rem 0' }}>
-                    <span>Hệ thống tự động cập nhật khi thanh toán xong.</span>
+                  <div style={{ textAlign: 'center', fontSize: '0.78rem', color: '#64748b', padding: '0.25rem 0' }}>
+                    <span>Sau khi thanh toán xong, hệ thống tự động chuyển thẳng về trang web.</span>
                   </div>
                 </div>
 
@@ -1610,11 +1919,12 @@ export default function CustomerView({ user, onProfileUpdated, onLogout }) {
                     onClick={() => {
                       setPaymentModal(null);
                       setPaymentSuccessData(null);
-                      setTab('bookings');
+                      setTab('tickets');
                       fetchMyBookings();
+                      fetchMyTickets();
                     }}
                   >
-                    🎟️ Xem vé trong Đơn hàng của tôi
+                    🎟️ Xem Vé QR của tôi
                   </button>
                   <button
                     type="button"

@@ -85,6 +85,14 @@ class OrganizerProfile(Base):
 
     user = relationship("User", back_populates="organizer_profile")
 
+    @property
+    def user_email(self):
+        return self.user.email if self.user else None
+
+    @property
+    def user_full_name(self):
+        return self.user.full_name if self.user else None
+
 
 class EventStaffAssignment(Base):
     """Bảng phân công nhân viên theo từng sự kiện và phân quyền chi tiết."""

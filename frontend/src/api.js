@@ -2,8 +2,41 @@ const IDENTITY_BASE_URL = 'http://localhost:8001/api/v1';
 const EVENT_BASE_URL = 'http://localhost:8002/api/v1';
 const PAYMENT_BASE_URL = 'http://localhost:8004/api/v1';
 const BOOKING_BASE_URL = 'http://localhost:8003';
+const TICKET_BASE_URL = 'http://localhost:8005';
 
-export const getStoredToken = () => localStorage.getItem('token');
+export const MAX_SESSION_DURATION_MS = 2 * 60 * 60 * 1000; // Tối đa 2 tiếng (7.200.000 ms)
+
+export const getTokenExpirationMs = (token) => {
+  if (!token) return null;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    const payload = JSON.parse(jsonPayload);
+    if (!payload.exp) return null;
+    return Number(payload.exp) * 1000;
+  } catch {
+    return null;
+  }
+};
+
+export const getStoredToken = () => {
+  const token = localStorage.getItem('token');
+  if (!token) return null;
+  const expMs = getTokenExpirationMs(token);
+  if (expMs && Date.now() >= expMs) {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    return null;
+  }
+  return token;
+};
 export const setStoredToken = (token) => localStorage.setItem('token', token);
 export const removeStoredToken = () => localStorage.removeItem('token');
 
@@ -30,6 +63,9 @@ async function requestUrl(baseUrl, endpoint, options = {}) {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
+    if (response.status === 401 && token && !endpoint.startsWith('/auth/login')) {
+      window.dispatchEvent(new CustomEvent('auth:session-expired'));
+    }
     const errorMsg = data?.detail || 'Đã có lỗi xảy ra. Vui lòng thử lại.';
     throw new Error(typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg));
   }
@@ -41,6 +77,7 @@ const requestIdentity = (endpoint, options = {}) => requestUrl(IDENTITY_BASE_URL
 const requestEvent = (endpoint, options = {}) => requestUrl(EVENT_BASE_URL, endpoint, options);
 const requestPayment = (endpoint, options = {}) => requestUrl(PAYMENT_BASE_URL, endpoint, options);
 const requestBooking = (endpoint, options = {}) => requestUrl(BOOKING_BASE_URL, endpoint, options);
+const requestTicket = (endpoint, options = {}) => requestUrl(TICKET_BASE_URL, endpoint, options);
 
 export const api = {
   // Auth (Identity Service - Port 8001)
@@ -56,6 +93,7 @@ export const api = {
 
   // Admin (Identity Service - Port 8001)
   getPendingOrganizers: () => requestIdentity('/admin/organizers/pending'),
+  getAllOrganizers: (status = '') => requestIdentity(`/admin/organizers${status ? `?status=${encodeURIComponent(status)}` : ''}`),
   reviewOrganizer: (userId, status) => requestIdentity(`/admin/organizers/${userId}/approve`, {
     method: 'PATCH',
     body: JSON.stringify({ status })
@@ -151,5 +189,24 @@ export const api = {
   getUserBookings: (userId) => requestBooking(`/bookings/user/${userId}`),
   releaseExpiredBookings: () => requestBooking('/bookings/release-expired', {
     method: 'POST'
+  }),
+  ensureBookingTickets: (bookingId, ownerName = '') => requestBooking(
+    `/bookings/${bookingId}/ensure-tickets${ownerName ? `?owner_name=${encodeURIComponent(ownerName)}` : ''}`,
+    { method: 'POST' }
+  ),
+
+  // Ticket Service (Port 8005 - Phát hành vé điện tử QR, Chuyển nhượng & Check-in)
+  getUserTickets: (userId) => requestTicket(`/users/${userId}/tickets`),
+  getBookingTickets: (bookingId) => requestTicket(`/bookings/${bookingId}/tickets`),
+  getEventTickets: (eventId) => requestTicket(`/events/${eventId}/tickets`),
+  getTicketDetail: (ticketCode) => requestTicket(`/tickets/${encodeURIComponent(ticketCode)}`),
+  getTicketQrUrl: (ticketCode, qrVersion = 1) => `${TICKET_BASE_URL}/tickets/${encodeURIComponent(ticketCode)}/qr?v=${qrVersion}`,
+  transferTicket: (ticketCode, payload) => requestTicket(`/tickets/${encodeURIComponent(ticketCode)}/transfer`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  }),
+  checkinTicket: (payload) => requestTicket('/tickets/check-in', {
+    method: 'POST',
+    body: JSON.stringify(payload)
   }),
 };

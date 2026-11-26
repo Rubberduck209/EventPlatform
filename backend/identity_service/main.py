@@ -11,9 +11,11 @@ if sys.platform == "win32":
     BaseSelectorEventLoop._read_from_self = _read_from_self_patched
 
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
 from typing import List, Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session, joinedload
@@ -47,10 +49,12 @@ from auth import (
     clear_login_failures,
     close_http_client,
     create_access_token,
+    decode_access_token,
     get_current_user,
     hash_password,
     record_login_failure,
     require_roles,
+    security,
     verify_google_id_token,
     verify_password
 )
@@ -344,17 +348,34 @@ def get_my_profile(current_user: User = Depends(get_current_user)):
 
 
 @app.post("/api/v1/auth/refresh", response_model=TokenResponse, tags=["Auth"])
-def refresh_jwt_token(current_user: User = Depends(get_current_user)):
+def refresh_jwt_token(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    current_user: User = Depends(get_current_user)
+):
     """
     Làm mới JWT Access Token để đồng bộ Role mới nhất từ Database
-    (ví dụ: ngay sau khi Customer được Admin phê duyệt nâng cấp lên ORGANIZER).
+    (ví dụ: ngay sau khi Customer được Admin phê duyệt nâng cấp lên ORGANIZER),
+    nhưng giữ nguyên thời hạn tối đa 2 tiếng của phiên đăng nhập ban đầu.
     """
+    payload = decode_access_token(credentials.credentials)
+    orig_exp = payload.get("exp")
+    remaining_delta = None
+    if orig_exp:
+        remaining_sec = float(orig_exp) - time.time()
+        if remaining_sec <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Phiên đăng nhập 2 giờ đã hết hạn, vui lòng đăng nhập lại",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        remaining_delta = timedelta(seconds=remaining_sec)
+
     token_data = {
         "sub": str(current_user.id),
         "email": current_user.email,
         "role": current_user.role.value
     }
-    new_token = create_access_token(token_data)
+    new_token = create_access_token(token_data, expires_delta=remaining_delta)
     return TokenResponse(access_token=new_token, user=UserResponse.model_validate(current_user))
 
 
@@ -403,6 +424,19 @@ def get_organizer_profile(
     if not profile:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chưa tìm thấy hồ sơ ban tổ chức")
     return profile
+
+
+@app.get("/api/v1/admin/organizers", response_model=List[OrganizerProfileResponse], tags=["Admin"])
+def get_all_organizers(
+    status: Optional[str] = None,
+    current_user: User = Depends(require_roles([UserRole.ADMIN])),
+    db: Session = Depends(get_db)
+):
+    """Admin xem danh sách tất cả các Ban tổ chức trong hệ thống (PENDING, APPROVED, REJECTED)."""
+    query = db.query(OrganizerProfile).options(joinedload(OrganizerProfile.user))
+    if status and status.upper() in ["PENDING", "APPROVED", "REJECTED"]:
+        query = query.filter(OrganizerProfile.approval_status == status.upper())
+    return query.order_by(OrganizerProfile.created_at.desc()).all()
 
 
 @app.get("/api/v1/admin/organizers/pending", response_model=List[OrganizerProfileResponse], tags=["Admin"])
@@ -454,6 +488,32 @@ def review_organizer(
 # 3. EVENT STAFF MANAGEMENT & ASSIGNMENT ENDPOINTS
 # ==============================================================================
 
+def format_staff_user_response(staff: User, org_staff_id: int) -> StaffUserResponse:
+    return StaffUserResponse(
+        id=staff.id,
+        org_staff_id=org_staff_id,
+        email=staff.email,
+        full_name=staff.full_name,
+        phone=staff.phone,
+        role=staff.role,
+        status=staff.status,
+        created_by_organizer_id=staff.created_by_organizer_id,
+        created_at=staff.created_at,
+    )
+
+
+def get_org_staff_seq_map(db: Session, organizer_id: Optional[int]) -> dict:
+    if not organizer_id:
+        return {}
+    staff_asc = (
+        db.query(User.id)
+        .filter(User.role == UserRole.STAFF, User.created_by_organizer_id == organizer_id)
+        .order_by(User.id.asc())
+        .all()
+    )
+    return {uid: idx + 1 for idx, (uid,) in enumerate(staff_asc)}
+
+
 @app.post("/api/v1/organizers/staff", response_model=StaffUserResponse, status_code=status.HTTP_201_CREATED, tags=["Staff Management"])
 def create_staff_account(
     payload: StaffCreateRequest,
@@ -481,7 +541,8 @@ def create_staff_account(
     db.add(new_staff)
     db.commit()
     db.refresh(new_staff)
-    return new_staff
+    seq_map = get_org_staff_seq_map(db, current_user.id)
+    return format_staff_user_response(new_staff, org_staff_id=seq_map.get(new_staff.id, 1))
 
 
 @app.get("/api/v1/organizers/staff", response_model=List[StaffUserResponse], tags=["Staff Management"])
@@ -489,11 +550,25 @@ def list_my_managed_staff(
     current_user: User = Depends(require_roles([UserRole.ORGANIZER, UserRole.ADMIN])),
     db: Session = Depends(get_db)
 ):
-    """Ban tổ chức xem danh sách nhân viên riêng do chính mình tạo và quản lý."""
-    query = db.query(User).filter(User.role == UserRole.STAFF)
+    """Ban tổ chức xem danh sách nhân viên độc lập do chính mình tạo và quản lý (đánh mã #1, #2, #3 riêng từng tổ chức)."""
     if current_user.role == UserRole.ORGANIZER:
-        query = query.filter(User.created_by_organizer_id == current_user.id)
-    return query.order_by(User.id.desc()).all()
+        staff_asc = (
+            db.query(User)
+            .filter(User.role == UserRole.STAFF, User.created_by_organizer_id == current_user.id)
+            .order_by(User.id.asc())
+            .all()
+        )
+        return [format_staff_user_response(s, org_staff_id=idx + 1) for idx, s in enumerate(staff_asc)]
+
+    # Với ADMIN: vẫn đánh số thứ tự độc lập theo từng created_by_organizer_id
+    all_staff_asc = db.query(User).filter(User.role == UserRole.STAFF).order_by(User.id.asc()).all()
+    counters = {}
+    result = []
+    for s in all_staff_asc:
+        org_key = s.created_by_organizer_id or 0
+        counters[org_key] = counters.get(org_key, 0) + 1
+        result.append(format_staff_user_response(s, org_staff_id=counters[org_key]))
+    return result
 
 
 @app.delete("/api/v1/organizers/staff/{staff_id}", status_code=status.HTTP_200_OK, tags=["Staff Management"])
@@ -583,11 +658,13 @@ def assign_event_staff(
         db.commit()
         db.refresh(assignment)
 
+    seq_map = get_org_staff_seq_map(db, staff_user.created_by_organizer_id or current_user.id)
     return StaffAssignmentResponse(
         id=assignment.id,
         event_id=assignment.event_id,
         event_title=assignment.event_title,
         staff_user_id=staff_user.id,
+        org_staff_id=seq_map.get(staff_user.id, 1),
         staff_name=staff_user.full_name,
         staff_email=staff_user.email,
         staff_role_title=assignment.staff_role_title,
@@ -618,23 +695,29 @@ def list_event_staff(
     if current_user.role == UserRole.ORGANIZER:
         query = query.filter(EventStaffAssignment.assigned_by_organizer_id == current_user.id)
 
-    assignments = query.all()
-
-    return [
-        StaffAssignmentResponse(
-            id=a.id,
-            event_id=a.event_id,
-            event_title=a.event_title,
-            staff_user_id=a.staff_user_id,
-            staff_name=a.staff_user.full_name if a.staff_user else "Unknown",
-            staff_email=a.staff_user.email if a.staff_user else "Unknown",
-            staff_role_title=a.staff_role_title or "Nhân viên Sự kiện",
-            permissions=a.permissions,
-            is_active=a.is_active,
-            created_at=a.created_at
+    assignments = query.order_by(EventStaffAssignment.staff_user_id.asc()).all()
+    seq_cache = {}
+    result = []
+    for a in assignments:
+        org_id = (a.staff_user.created_by_organizer_id if a.staff_user else None) or a.assigned_by_organizer_id
+        if org_id not in seq_cache:
+            seq_cache[org_id] = get_org_staff_seq_map(db, org_id)
+        result.append(
+            StaffAssignmentResponse(
+                id=a.id,
+                event_id=a.event_id,
+                event_title=a.event_title,
+                staff_user_id=a.staff_user_id,
+                org_staff_id=seq_cache[org_id].get(a.staff_user_id, 1),
+                staff_name=a.staff_user.full_name if a.staff_user else "Unknown",
+                staff_email=a.staff_user.email if a.staff_user else "Unknown",
+                staff_role_title=a.staff_role_title or "Nhân viên Sự kiện",
+                permissions=a.permissions,
+                is_active=a.is_active,
+                created_at=a.created_at
+            )
         )
-        for a in assignments
-    ]
+    return result
 
 
 @app.delete("/api/v1/staff/events/{event_id}/{staff_user_id}", status_code=status.HTTP_200_OK, tags=["Staff Management"])

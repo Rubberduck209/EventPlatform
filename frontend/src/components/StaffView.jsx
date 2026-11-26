@@ -14,11 +14,21 @@ export default function StaffView({ user, onLogout }) {
   const [checkinHistory, setCheckinHistory] = useState([]);
 
   const [attendeeSearch, setAttendeeSearch] = useState('');
-  const [attendees, setAttendees] = useState([
-    { ticketCode: 'TK-2027-VIP-001', name: 'Nguyễn Văn An', email: 'customer1@gmail.com', type: 'VIP', seat: 'A01', checkedIn: true, time: '18:02' },
-    { ticketCode: 'TK-2027-STD-088', name: 'Trần Thị Bích', email: 'customer2@gmail.com', type: 'Standard', seat: 'C09', checkedIn: false, time: '-' },
-    { ticketCode: 'TK-2027-STD-055', name: 'Lê Hoàng Nam', email: 'customer3@gmail.com', type: 'Student', seat: 'D15', checkedIn: false, time: '-' }
-  ]);
+  const [attendees, setAttendees] = useState([]);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
+
+  const fetchEventTickets = async (evId) => {
+    if (!evId) return;
+    setTicketsLoading(true);
+    try {
+      const list = await api.getEventTickets(String(evId));
+      setAttendees(list || []);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setTicketsLoading(false);
+    }
+  };
 
   const fetchAssignments = async () => {
     setLoading(true);
@@ -39,49 +49,77 @@ export default function StaffView({ user, onLogout }) {
     fetchAssignments();
   }, [user]);
 
+  useEffect(() => {
+    if (selectedEventId) {
+      fetchEventTickets(selectedEventId);
+    }
+  }, [selectedEventId]);
+
   const currentAssignment = assignments.find((a) => a.event_id === selectedEventId) || assignments[0];
   const hasCheckinPermission = currentAssignment?.permissions?.includes('CHECKIN');
   const hasViewPermission = currentAssignment?.permissions?.includes('VIEW_ATTENDEES');
 
-  const handleCheckin = (e) => {
+  const handleCheckin = async (e) => {
     e.preventDefault();
-    if (!ticketCodeInput.trim()) return;
+    const rawInput = ticketCodeInput.trim();
+    if (!rawInput || !selectedEventId) return;
 
-    const code = ticketCodeInput.trim().toUpperCase();
-    const matched = attendees.find((a) => a.ticketCode === code);
+    try {
+      let qrTextToSend = rawInput;
+      // Nếu nhân viên nhập mã vé ngắn (VD: TK-XXXX) không chứa dấu chấm chữ ký, hỗ trợ tra cứu chuỗi QR tương ứng
+      if (!rawInput.includes('.') && rawInput.toUpperCase().startsWith('TK-')) {
+        const detail = await api.getTicketDetail(rawInput.toUpperCase()).catch(() => null);
+        if (detail && detail.qr_text) {
+          qrTextToSend = detail.qr_text;
+        }
+      }
 
-    if ((matched && matched.checkedIn) || checkinHistory.some((h) => h.ticketCode === code)) {
-      setScanResult({
-        type: 'error',
-        message: `Mã vé [${code}] đã được check-in trước đó. Từ chối qua cổng.`
+      const res = await api.checkinTicket({
+        qr_text: qrTextToSend,
+        event_id: String(selectedEventId),
+        staff_id: String(user.id),
       });
-      return;
+
+      const nowTime = res.checked_in_at
+        ? new Date(res.checked_in_at).toLocaleTimeString('vi-VN')
+        : new Date().toLocaleTimeString('vi-VN');
+
+      const newEntry = {
+        ticketCode: res.ticket_code,
+        attendee: res.owner_name || 'Khách tham dự',
+        seat: res.seat_id ? `Ghế ${res.seat_id}` : `Vé đứng (Hạng #${res.ticket_type_id})`,
+        time: nowTime,
+      };
+
+      setCheckinHistory((prev) => [newEntry, ...prev]);
+      setScanResult({
+        text: `✓ ${res.message} Mã vé [${res.ticket_code}] — ${newEntry.attendee} — ${newEntry.seat}.`,
+        type: 'success',
+      });
+      setTicketCodeInput('');
+      await fetchEventTickets(selectedEventId);
+    } catch (err) {
+      let errMsg = err.message || 'Check-in thất bại!';
+      try {
+        const parsed = JSON.parse(errMsg);
+        if (parsed && parsed.message) {
+          errMsg = `[${parsed.result || 'ERROR'}] ${parsed.message}`;
+        }
+      } catch (_) {
+        // giữ nguyên chuỗi lỗi
+      }
+      setScanResult({
+        text: errMsg,
+        type: 'error',
+      });
+      await fetchEventTickets(selectedEventId);
     }
-
-    const nowTime = new Date().toLocaleTimeString();
-    const newEntry = {
-      ticketCode: code,
-      attendee: matched ? matched.name : 'Khách tham dự',
-      seat: matched ? matched.seat : 'Standard',
-      time: nowTime
-    };
-
-    setCheckinHistory([newEntry, ...checkinHistory]);
-    if (matched) {
-      setAttendees(attendees.map((a) => (a.ticketCode === code ? { ...a, checkedIn: true, time: nowTime } : a)));
-    }
-
-    setScanResult({
-      type: 'success',
-      message: `Xác thực hợp lệ: Mã vé [${code}] — ${newEntry.attendee} — Ghế ${newEntry.seat}.`
-    });
-    setTicketCodeInput('');
   };
 
   const filteredAttendees = attendees.filter((a) =>
-    a.name.toLowerCase().includes(attendeeSearch.toLowerCase()) ||
-    a.ticketCode.toLowerCase().includes(attendeeSearch.toLowerCase()) ||
-    a.email.toLowerCase().includes(attendeeSearch.toLowerCase())
+    (a.owner_name || '').toLowerCase().includes(attendeeSearch.toLowerCase()) ||
+    (a.ticket_code || '').toLowerCase().includes(attendeeSearch.toLowerCase()) ||
+    (a.seat_id || '').toLowerCase().includes(attendeeSearch.toLowerCase())
   );
 
   return (
@@ -115,7 +153,15 @@ export default function StaffView({ user, onLogout }) {
                 ))}
               </select>
             )}
-            <button type="button" className="btn btn-outline" onClick={fetchAssignments} style={{ padding: '0.45rem 0.85rem' }}>
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={() => {
+                fetchAssignments();
+                if (selectedEventId) fetchEventTickets(selectedEventId);
+              }}
+              style={{ padding: '0.45rem 0.85rem' }}
+            >
               Làm mới
             </button>
             <button type="button" className="btn btn-outline" onClick={onLogout} style={{ padding: '0.45rem 0.85rem' }}>
@@ -159,7 +205,7 @@ export default function StaffView({ user, onLogout }) {
                           type="text"
                           required
                           className="form-input mono"
-                          placeholder="Nhập hoặc quét mã vé..."
+                          placeholder="Dán chuỗi QR ký số hoặc nhập mã vé (VD: TK-...)..."
                           value={ticketCodeInput}
                           onChange={(e) => setTicketCodeInput(e.target.value)}
                         />
@@ -193,7 +239,7 @@ export default function StaffView({ user, onLogout }) {
                           checkinHistory.map((item, idx) => (
                             <tr key={idx}>
                               <td className="mono"><strong>{item.ticketCode}</strong></td>
-                              <td>{item.attendee} — Ghế {item.seat}</td>
+                              <td>{item.attendee} — {item.seat}</td>
                               <td style={{ color: 'var(--success)', fontWeight: 600 }}>{item.time}</td>
                             </tr>
                           ))
@@ -231,30 +277,70 @@ export default function StaffView({ user, onLogout }) {
                     <table className="data-table">
                       <thead>
                         <tr>
-                          <th>Họ và tên</th>
+                          <th>Chủ sở hữu</th>
                           <th>Mã vé</th>
-                          <th>Ghế</th>
+                          <th>Vị trí</th>
                           <th>Trạng thái</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredAttendees.map((a, i) => (
-                          <tr key={i}>
-                            <td>
-                              <strong>{a.name}</strong>
-                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{a.email}</div>
-                            </td>
-                            <td className="mono">{a.ticketCode}</td>
-                            <td>{a.seat}</td>
-                            <td>
-                              {a.checkedIn ? (
-                                <span className="badge badge-APPROVED">Đã vào lúc {a.time}</span>
-                              ) : (
-                                <span className="badge badge-PENDING">Chưa vào</span>
-                              )}
+                        {ticketsLoading ? (
+                          <tr>
+                            <td colSpan="4" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '1.5rem' }}>
+                              Đang tải danh sách vé từ Ticket Service...
                             </td>
                           </tr>
-                        ))}
+                        ) : filteredAttendees.length === 0 ? (
+                          <tr>
+                            <td colSpan="4" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '1.5rem' }}>
+                              Chưa có vé nào được phát hành cho sự kiện này.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredAttendees.map((a) => {
+                            const isCheckedIn = a.status === 'CHECKED_IN';
+                            const isCancelled = a.status === 'CANCELLED';
+                            const checkinTime = a.checked_in_at
+                              ? new Date(a.checked_in_at).toLocaleTimeString('vi-VN')
+                              : '';
+                            return (
+                              <tr key={a.ticket_code}>
+                                <td>
+                                  <strong>{a.owner_name}</strong>
+                                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                    User #{a.owner_user_id} • Đơn #{a.booking_id} • QR v{a.qr_version}
+                                  </div>
+                                </td>
+                                <td className="mono" style={{ fontSize: '0.8rem' }}>{a.ticket_code}</td>
+                                <td>{a.seat_id ? `Ghế ${a.seat_id}` : `Vé đứng (Hạng #${a.ticket_type_id})`}</td>
+                                <td>
+                                  {isCheckedIn ? (
+                                    <span className="badge badge-APPROVED">
+                                      Đã vào {checkinTime ? `lúc ${checkinTime}` : ''}
+                                    </span>
+                                  ) : isCancelled ? (
+                                    <span className="badge badge-REJECTED">Đã hủy</span>
+                                  ) : (
+                                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                                      <span className="badge badge-PENDING">Chưa vào</span>
+                                      {hasCheckinPermission && a.qr_text && (
+                                        <button
+                                          type="button"
+                                          className="btn btn-outline"
+                                          style={{ padding: '0.18rem 0.45rem', fontSize: '0.7rem' }}
+                                          title="Đưa chuỗi QR ký số của vé này vào ô quét"
+                                          onClick={() => setTicketCodeInput(a.qr_text)}
+                                        >
+                                          Quét QR →
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
                       </tbody>
                     </table>
                   </>

@@ -81,15 +81,20 @@ INSERT INTO `users` (`id`, `email`, `password_hash`, `full_name`, `phone`, `role
 (2, 'admin@platform.com', '$2b$10$9wE.I6uLrQ.xrM3aKVkg3uxp6KgU/cRcpR/2PItJcoZEEZ2OAEGOy', 'Platform Administrator', '0999999999', 'ADMIN', 'ACTIVE', 'LOCAL', NULL),
 (3, 'customer1@gmail.com', '$2b$10$9wE.I6uLrQ.xrM3aKVkg3uxp6KgU/cRcpR/2PItJcoZEEZ2OAEGOy', 'Nguyễn Văn An', '0901111222', 'CUSTOMER', 'ACTIVE', 'LOCAL', NULL),
 (4, 'customer2@gmail.com', '$2b$10$9wE.I6uLrQ.xrM3aKVkg3uxp6KgU/cRcpR/2PItJcoZEEZ2OAEGOy', 'Trần Thị Bích', '0902222333', 'CUSTOMER', 'ACTIVE', 'LOCAL', NULL),
-(5, 'customer3@gmail.com', '$2b$10$9wE.I6uLrQ.xrM3aKVkg3uxp6KgU/cRcpR/2PItJcoZEEZ2OAEGOy', 'Lê Hoàng Nam', '0903333444', 'CUSTOMER', 'ACTIVE', 'LOCAL', NULL),
+(5, 'customer3@tdtu.edu.vn', '$2b$10$9wE.I6uLrQ.xrM3aKVkg3uxp6KgU/cRcpR/2PItJcoZEEZ2OAEGOy', 'Lê Hoàng Nam (Sinh viên TDTU)', '0903333444', 'CUSTOMER', 'ACTIVE', 'LOCAL', NULL),
 (6, 'organizer@gmail.com', '$2b$10$9wE.I6uLrQ.xrM3aKVkg3uxp6KgU/cRcpR/2PItJcoZEEZ2OAEGOy', 'Công ty Sự Kiện TDTU', '0918888999', 'ORGANIZER', 'ACTIVE', 'LOCAL', NULL),
-(7, 'staff@gmail.com', '$2b$10$9wE.I6uLrQ.xrM3aKVkg3uxp6KgU/cRcpR/2PItJcoZEEZ2OAEGOy', 'Phạm Minh Quân', '0987654321', 'STAFF', 'ACTIVE', 'LOCAL', 6);
+(7, 'staff@gmail.com', '$2b$10$9wE.I6uLrQ.xrM3aKVkg3uxp6KgU/cRcpR/2PItJcoZEEZ2OAEGOy', 'Phạm Minh Quân', '0987654321', 'STAFF', 'ACTIVE', 'LOCAL', 6),
+(8, 'staff1@gmail.com', '$2b$10$9wE.I6uLrQ.xrM3aKVkg3uxp6KgU/cRcpR/2PItJcoZEEZ2OAEGOy', 'Nguyễn Văn Soát Vé 1', '0981112233', 'STAFF', 'ACTIVE', 'LOCAL', 6),
+(9, 'pending_org@gmail.com', '$2b$10$9wE.I6uLrQ.xrM3aKVkg3uxp6KgU/cRcpR/2PItJcoZEEZ2OAEGOy', 'Công ty Tổ chức Giải trí Trẻ', '0912345678', 'CUSTOMER', 'PENDING_APPROVAL', 'LOCAL', NULL);
 
 INSERT INTO `organizer_profiles` (`user_id`, `organization_name`, `tax_code`, `contact_phone`, `business_license_url`, `approval_status`, `approved_by_admin_id`, `approved_at`) VALUES
-(6, 'Công ty TNHH Tổ Chức Sự Kiện TDTU', '0312345678', '0918888999', 'https://example.com/giay-phep-tdtu.pdf', 'APPROVED', 1, NOW());
+(6, 'Công ty TNHH Tổ Chức Sự Kiện TDTU', '0312345678', '0918888999', 'https://example.com/giay-phep-tdtu.pdf', 'APPROVED', 1, NOW()),
+(9, 'Công ty Cổ phần Giải trí Trẻ Việt Nam', '0398765432', '0912345678', 'https://example.com/giay-phep-tre.pdf', 'PENDING', NULL, NULL);
 
 INSERT INTO `event_staff_assignments` (`id`, `event_id`, `event_title`, `staff_user_id`, `assigned_by_organizer_id`, `staff_role_title`, `permissions`, `is_active`) VALUES
-(1, 1, 'TDTU Music Festival 2027', 7, 6, 'Nhân viên Soát vé Cổng A', '["CHECKIN", "VIEW_ATTENDEES"]', 1);
+(1, 1, 'TDTU Music Festival 2027', 7, 6, 'Nhân viên Soát vé Cổng A', '["CHECKIN", "VIEW_ATTENDEES"]', 1),
+(2, 1, 'TDTU Music Festival 2027', 8, 6, 'Nhân viên Soát vé Cổng Fanzone', '["CHECKIN", "VIEW_ATTENDEES"]', 1),
+(3, 2, 'AI & Cloud Microservices Summit 2027', 8, 6, 'Nhân viên Điểm danh Hội trường', '["CHECKIN", "VIEW_ATTENDEES"]', 1);
 
 
 -- ==============================================================================
@@ -225,10 +230,13 @@ INSERT INTO `event_categories` (`id`, `name`, `slug`) VALUES
 (3, 'Thể thao & Giải trí', 'the-thao-giai-tri'),
 (4, 'Văn hóa & Nghệ thuật', 'van-hoa-nghe-thuat');
 
--- 2 Sự kiện mẫu mở bán
-INSERT INTO `events` (`id`, `organizer_id`, `category_id`, `title`, `slug`, `short_description`, `description`, `venue_name`, `venue_address`, `start_time`, `end_time`, `status`, `refund_policy`) VALUES
-(1, 6, 1, 'TDTU Music Festival 2027', 'tdtu-music-festival-2027', 'Đại nhạc hội sinh viên và công nghệ âm thanh ánh sáng 2027.', 'Sự kiện âm nhạc quy mô lớn với khu vực Khán đài ghế ngồi VIP/Standard và khu vực Fanzone đứng.', 'Sân vận động Đại học Tôn Đức Thắng', '19 Nguyễn Hữu Thọ, Phường Tân Phong, Quận 7, TP.HCM', DATE_ADD(NOW(), INTERVAL 30 DAY), DATE_ADD(NOW(), INTERVAL 30 DAY) + INTERVAL 4 HOUR, 'ON_SALE', 'Hoàn tiền 100% nếu hủy vé trước 7 ngày diễn ra sự kiện.'),
-(2, 6, 2, 'AI & Cloud Microservices Summit 2027', 'ai-cloud-microservices-summit-2027', 'Hội thảo chuyên sâu về Kiến trúc Hướng Dịch vụ, Cloud Native và AI.', 'Quy tụ các diễn giả công nghệ hàng đầu chia sẻ về thiết kế hệ thống phân tán chịu tải cao.', 'Hội trường 6B - Đại học Tôn Đức Thắng', '19 Nguyễn Hữu Thọ, Phường Tân Phong, Quận 7, TP.HCM', DATE_ADD(NOW(), INTERVAL 20 DAY), DATE_ADD(NOW(), INTERVAL 20 DAY) + INTERVAL 3 HOUR, 'ON_SALE', 'Hoàn tiền 100% trước 48 giờ diễn ra hội thảo.');
+-- Các sự kiện mẫu bao phủ mọi trạng thái vòng đời
+INSERT INTO `events` (`id`, `organizer_id`, `category_id`, `title`, `slug`, `short_description`, `description`, `venue_name`, `venue_address`, `start_time`, `end_time`, `status`, `refund_policy`, `cancel_reason`, `cancelled_at`) VALUES
+(1, 6, 1, 'TDTU Music Festival 2027', 'tdtu-music-festival-2027', 'Đại nhạc hội sinh viên và công nghệ âm thanh ánh sáng 2027.', 'Sự kiện âm nhạc quy mô lớn với khu vực Khán đài ghế ngồi VIP/Standard và khu vực Fanzone đứng.', 'Sân vận động Đại học Tôn Đức Thắng', '19 Nguyễn Hữu Thọ, Phường Tân Phong, Quận 7, TP.HCM', DATE_ADD(NOW(), INTERVAL 30 DAY), DATE_ADD(NOW(), INTERVAL 30 DAY) + INTERVAL 4 HOUR, 'ON_SALE', 'Hoàn tiền 100% nếu hủy vé trước 7 ngày diễn ra sự kiện.', NULL, NULL),
+(2, 6, 2, 'AI & Cloud Microservices Summit 2027', 'ai-cloud-microservices-summit-2027', 'Hội thảo chuyên sâu về Kiến trúc Hướng Dịch vụ, Cloud Native và AI.', 'Quy tụ các diễn giả công nghệ hàng đầu chia sẻ về thiết kế hệ thống phân tán chịu tải cao.', 'Hội trường 6B - Đại học Tôn Đức Thắng', '19 Nguyễn Hữu Thọ, Phường Tân Phong, Quận 7, TP.HCM', DATE_ADD(NOW(), INTERVAL 20 DAY), DATE_ADD(NOW(), INTERVAL 20 DAY) + INTERVAL 3 HOUR, 'ON_SALE', 'Hoàn tiền 100% trước 48 giờ diễn ra hội thảo.', NULL, NULL),
+(3, 6, 4, 'Triển lãm Nghệ thuật Sắp đặt & Điêu khắc Trẻ', 'trien-lam-nghe-thuat-sap-dat-va-dieu-khac-tre', 'Triển lãm mỹ thuật của sinh viên mỹ thuật công nghiệp TDTU.', 'Sự kiện đang trong giai đoạn soạn thảo, chưa công bố bán vé ra công chúng.', 'Nhà thi đấu Đa năng TDTU', '19 Nguyễn Hữu Thọ, Phường Tân Phong, Quận 7, TP.HCM', DATE_ADD(NOW(), INTERVAL 45 DAY), DATE_ADD(NOW(), INTERVAL 46 DAY), 'DRAFT', 'Không hoàn tiền với vé tham quan triển lãm.', NULL, NULL),
+(4, 6, 1, 'Đêm Nhạc Acoustic Mùa Thu 2026', 'dem-nhac-acoustic-mua-thu-2026', 'Đêm nhạc acoustic ấm cúng đã diễn ra thành công tốt đẹp.', 'Chương trình ca nhạc gây quỹ học bổng sinh viên nghèo vượt khó.', 'Hội trường Tòa nhà A - TDTU', '19 Nguyễn Hữu Thọ, Phường Tân Phong, Quận 7, TP.HCM', DATE_SUB(NOW(), INTERVAL 10 DAY), DATE_SUB(NOW(), INTERVAL 10 DAY) + INTERVAL 3 HOUR, 'COMPLETED', 'Sự kiện đã kết thúc.', NULL, NULL),
+(5, 6, 3, 'Giải Chạy TDTU Marathon 2026 (Đã Hủy Do Bão)', 'giai-chay-tdtu-marathon-2026-da-huy-do-bao', 'Giải chạy bán marathon thường niên vòng quanh khu đô thị Phú Mỹ Hưng.', 'Sự kiện buộc phải hủy vì điều kiện thời tiết bão lũ nguy hiểm theo chỉ đạo.', 'Khuôn viên Đại học Tôn Đức Thắng', '19 Nguyễn Hữu Thọ, Phường Tân Phong, Quận 7, TP.HCM', DATE_SUB(NOW(), INTERVAL 5 DAY), DATE_SUB(NOW(), INTERVAL 5 DAY) + INTERVAL 5 HOUR, 'CANCELLED', 'Hoàn tiền 100% cho toàn bộ vận động viên đăng ký.', 'Thời tiết mưa bão ngập lụt nguy hiểm đến an toàn người tham gia', DATE_SUB(NOW(), INTERVAL 7 DAY));
 
 -- Khu vực cho Sự kiện 1
 INSERT INTO `event_zones` (`id`, `event_id`, `name`, `zone_type`, `total_capacity`, `grid_rows`, `grid_cols`) VALUES
@@ -353,11 +361,15 @@ CREATE TABLE `idempotency_records` (
 -- DỮ LIỆU TEST MẪU (SEED DATA) CHO PAYMENT SERVICE
 -- ==============================================================================
 INSERT INTO `payments` (`id`, `payment_code`, `booking_id`, `customer_id`, `amount`, `currency`, `payment_method`, `status`, `gateway_transaction_no`, `idempotency_key`, `paid_at`) VALUES
-(1, 'PAY-20270501-8931', 101, 3, 450000.00, 'VND', 'VNPAY_SANDBOX', 'SUCCESS', '14592031', 'seed-idem-key-pay-101', DATE_SUB(NOW(), INTERVAL 2 DAY)),
-(2, 'PAY-20270502-4412', 102, 3, 200000.00, 'VND', 'VNPAY_SANDBOX', 'SUCCESS', '14592032', 'seed-idem-key-pay-102', DATE_SUB(NOW(), INTERVAL 1 DAY));
+(1, 'PAY-20270501-8931', 101, 3, 650000.00, 'VND', 'VNPAY_SANDBOX', 'SUCCESS', '14592031', 'seed-idem-key-pay-101', DATE_SUB(NOW(), INTERVAL 2 DAY)),
+(2, 'PAY-20270502-4412', 102, 3, 300000.00, 'VND', 'VNPAY_SANDBOX', 'PENDING', NULL, 'seed-idem-key-pay-102', NULL),
+(3, 'PAY-20270503-7721', 103, 4, 450000.00, 'VND', 'VNPAY_SANDBOX', 'SUCCESS', '14592033', 'seed-idem-key-pay-103', DATE_SUB(NOW(), INTERVAL 1 DAY)),
+(4, 'PAY-20270504-1189', 104, 3, 300000.00, 'VND', 'VNPAY_SANDBOX', 'CANCELLED', '14592034', 'seed-idem-key-pay-104', DATE_SUB(NOW(), INTERVAL 3 DAY)),
+(5, 'PAY-20270505-5542', 105, 5, 50000.00, 'VND', 'VNPAY_SANDBOX', 'SUCCESS', '14592035', 'seed-idem-key-pay-105', DATE_SUB(NOW(), INTERVAL 12 HOUR)),
+(6, 'PAY-20270506-9910', 106, 4, 300000.00, 'VND', 'VNPAY_SANDBOX', 'EXPIRED', NULL, 'seed-idem-key-pay-106', NULL);
 
 INSERT INTO `payment_refunds` (`id`, `payment_id`, `booking_id`, `refund_amount`, `reason`, `status`, `gateway_refund_id`, `processed_at`) VALUES
-(1, 2, 102, 200000.00, 'Khách hàng yêu cầu hủy vé trước 7 ngày theo chính sách.', 'SUCCESS', 'VNP-REF-20270502-9901', NOW());
+(1, 4, 104, 300000.00, 'Khách hàng yêu cầu hủy vé ghế C02 theo chính sách sự kiện.', 'SUCCESS', 'VNP-REF-20270504-9901', DATE_SUB(NOW(), INTERVAL 3 DAY));
 
 
 -- ==============================================================================
@@ -426,66 +438,110 @@ CREATE TABLE `ticket_inventory` (
 
 -- Dữ liệu mẫu (Seed Data) cho Booking Service
 INSERT INTO `bookings` (`id`, `user_id`, `event_id`, `status`, `total_amount`, `created_at`, `expires_at`) VALUES
-(101, '4', '1', 'CONFIRMED', 450000.00, '2026-11-01 08:30:00', '2026-11-01 08:40:00'),
-(102, '4', '1', 'PENDING_PAYMENT', 300000.00, NOW(), DATE_ADD(NOW(), INTERVAL 10 MINUTE));
+(101, '3', '1', 'CONFIRMED', 650000.00, DATE_SUB(NOW(), INTERVAL 2 DAY), DATE_SUB(NOW(), INTERVAL 2 DAY) + INTERVAL 10 MINUTE),
+(102, '3', '1', 'PENDING_PAYMENT', 300000.00, NOW(), DATE_ADD(NOW(), INTERVAL 10 MINUTE)),
+(103, '4', '1', 'CONFIRMED', 450000.00, DATE_SUB(NOW(), INTERVAL 1 DAY), DATE_SUB(NOW(), INTERVAL 1 DAY) + INTERVAL 10 MINUTE),
+(104, '3', '1', 'CANCELLED', 300000.00, DATE_SUB(NOW(), INTERVAL 3 DAY), DATE_SUB(NOW(), INTERVAL 3 DAY) + INTERVAL 10 MINUTE),
+(105, '5', '2', 'CONFIRMED', 50000.00, DATE_SUB(NOW(), INTERVAL 12 HOUR), DATE_SUB(NOW(), INTERVAL 12 HOUR) + INTERVAL 10 MINUTE),
+(106, '4', '1', 'EXPIRED', 300000.00, DATE_SUB(NOW(), INTERVAL 1 HOUR), DATE_SUB(NOW(), INTERVAL 50 MINUTE));
 
 INSERT INTO `booking_items` (`id`, `booking_id`, `ticket_type_id`, `seat_id`, `quantity`, `unit_price`) VALUES
 (1, 101, '1', 'A01', 1, 450000.00),
-(2, 102, '2', 'C01', 1, 300000.00);
+(2, 101, '3', NULL, 1, 200000.00),
+(3, 102, '2', 'C01', 1, 300000.00),
+(4, 103, '1', 'B01', 1, 450000.00),
+(5, 104, '2', 'C02', 1, 300000.00),
+(6, 105, '6', 'A01', 1, 50000.00),
+(7, 106, '2', 'C03', 1, 300000.00);
 
 INSERT INTO `seat_reservations` (`id`, `event_id`, `seat_id`, `booking_id`, `status`) VALUES
 (1, '1', 'A01', 101, 'SOLD'),
-(2, '1', 'C01', 102, 'HELD');
+(2, '1', 'C01', 102, 'HELD'),
+(3, '1', 'B01', 103, 'SOLD'),
+(4, '1', 'C02', 104, 'RELEASED'),
+(5, '2', 'A01', 105, 'SOLD'),
+(6, '1', 'C03', 106, 'RELEASED');
 
 INSERT INTO `ticket_inventory` (`id`, `event_id`, `ticket_type_id`, `total_quantity`, `held_quantity`, `sold_quantity`) VALUES
-(1, '1', '1', 16, 0, 1),
-(2, '1', '2', 14, 1, 0),
-(3, '1', '3', 300, 0, 0),
+(1, '1', '1', 16, 0, 2), -- Ghế A01, B01 đã bán
+(2, '1', '2', 14, 1, 0), -- Ghế C01 đang giữ chỗ 10p
+(3, '1', '3', 300, 0, 1), -- 1 vé Fanzone đứng đã bán
 (4, '1', '4', 200, 0, 0),
 (5, '2', '5', 20, 0, 0),
-(6, '2', '6', 10, 0, 0);
+(6, '2', '6', 10, 0, 1); -- 1 vé SV Hội thảo đã bán
 
 
 -- ==============================================================================
--- 5. TICKET / CHECK-IN SERVICE DATABASE
+-- 5. TICKET / CHECK-IN SERVICE DATABASE (Đồng bộ chuẩn Ticket Service Port 8005)
 -- ==============================================================================
 CREATE DATABASE IF NOT EXISTS `ticket_db` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE `ticket_db`;
 
 DROP TABLE IF EXISTS `checkin_logs`;
+DROP TABLE IF EXISTS `ticket_transfers`;
 DROP TABLE IF EXISTS `tickets`;
 
 CREATE TABLE `tickets` (
-    `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    `ticket_code` VARCHAR(64) NOT NULL,
-    `booking_id` BIGINT UNSIGNED NOT NULL,
-    `event_id` BIGINT UNSIGNED NOT NULL,
-    `ticket_type_id` BIGINT UNSIGNED NOT NULL,
-    `seat_code` VARCHAR(20) DEFAULT NULL,
-    `attendee_name` VARCHAR(100) NOT NULL,
-    `attendee_email` VARCHAR(191) NOT NULL,
-    `qr_code_payload` TEXT NOT NULL,
-    `is_checked_in` BOOLEAN NOT NULL DEFAULT FALSE,
-    `checked_in_at` DATETIME DEFAULT NULL COMMENT 'Thời điểm soát vé vào cổng',
-    `status` ENUM('VALID', 'CHECKED_IN', 'CANCELLED', 'REFUNDED') NOT NULL DEFAULT 'VALID',
-    `issued_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Thời điểm phát hành vé sau khi thanh toán thành công',
-    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `id` INT NOT NULL AUTO_INCREMENT,
+    `ticket_code` VARCHAR(40) NOT NULL,
+    `booking_id` INT NOT NULL,
+    `ticket_index` INT NOT NULL DEFAULT 1,
+    `event_id` VARCHAR(50) NOT NULL,
+    `ticket_type_id` VARCHAR(50) NOT NULL,
+    `seat_id` VARCHAR(50) DEFAULT NULL COMMENT 'Ghế ngồi: có mã ghế; Vé đứng: NULL',
+    `owner_user_id` VARCHAR(50) NOT NULL,
+    `owner_name` VARCHAR(100) NOT NULL,
+    `status` VARCHAR(20) NOT NULL DEFAULT 'ISSUED' COMMENT 'ISSUED, CHECKED_IN, CANCELLED',
+    `qr_version` INT NOT NULL DEFAULT 1,
+    `issued_at` DATETIME NOT NULL,
+    `checked_in_at` DATETIME DEFAULT NULL,
+    `checked_in_by` VARCHAR(50) DEFAULT NULL,
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_ticket_code` (`ticket_code`),
-    KEY `idx_ticket_event_status` (`event_id`, `status`)
+    UNIQUE KEY `uq_ticket_booking_index` (`booking_id`, `ticket_index`),
+    KEY `idx_ticket_owner` (`owner_user_id`),
+    KEY `idx_ticket_event` (`event_id`)
 ) ENGINE=InnoDB;
 
 CREATE TABLE `checkin_logs` (
-    `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    `ticket_id` BIGINT UNSIGNED NOT NULL,
-    `staff_user_id` BIGINT UNSIGNED NOT NULL,
-    `checkin_device_info` VARCHAR(191) DEFAULT NULL,
-    `gate_name` VARCHAR(50) DEFAULT 'Cổng A',
-    `checkin_time` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `id` INT NOT NULL AUTO_INCREMENT,
+    `ticket_id` INT DEFAULT NULL,
+    `ticket_code` VARCHAR(60) DEFAULT NULL,
+    `event_id` VARCHAR(50) DEFAULT NULL,
+    `staff_id` VARCHAR(50) NOT NULL,
+    `result` VARCHAR(30) NOT NULL,
+    `scanned_at` DATETIME NOT NULL,
     PRIMARY KEY (`id`),
-    CONSTRAINT `fk_log_ticket` FOREIGN KEY (`ticket_id`) REFERENCES `tickets` (`id`)
+    KEY `idx_scan_ticket` (`ticket_id`),
+    KEY `idx_scan_event` (`event_id`)
 ) ENGINE=InnoDB;
+
+CREATE TABLE `ticket_transfers` (
+    `id` INT NOT NULL AUTO_INCREMENT,
+    `ticket_id` INT NOT NULL,
+    `from_user_id` VARCHAR(50) NOT NULL,
+    `to_user_id` VARCHAR(50) NOT NULL,
+    `to_owner_name` VARCHAR(100) NOT NULL,
+    `transferred_at` DATETIME NOT NULL,
+    PRIMARY KEY (`id`),
+    KEY `idx_transfer_ticket` (`ticket_id`)
+) ENGINE=InnoDB;
+
+-- Dữ liệu mẫu (Seed Data) chuẩn chữ ký QR HMAC-SHA256 cho Ticket Service
+INSERT INTO `tickets` (`id`, `ticket_code`, `booking_id`, `ticket_index`, `event_id`, `ticket_type_id`, `seat_id`, `owner_user_id`, `owner_name`, `status`, `qr_version`, `issued_at`, `checked_in_at`, `checked_in_by`) VALUES
+(1, 'TK-2027-AN-VIP01', 101, 1, '1', '1', 'A01', '3', 'Nguyễn Văn An', 'ISSUED', 1, DATE_SUB(NOW(), INTERVAL 2 DAY), NULL, NULL),
+(2, 'TK-2027-AN-FAN01', 101, 2, '1', '3', NULL, '3', 'Nguyễn Văn An', 'CHECKED_IN', 1, DATE_SUB(NOW(), INTERVAL 2 DAY), DATE_SUB(NOW(), INTERVAL 1 HOUR), '7'),
+(3, 'TK-2027-BICH-VIP02', 103, 1, '1', '1', 'B01', '4', 'Trần Thị Bích', 'ISSUED', 2, DATE_SUB(NOW(), INTERVAL 1 DAY), NULL, NULL),
+(4, 'TK-2027-AN-CANCEL', 104, 1, '1', '2', 'C02', '3', 'Nguyễn Văn An', 'CANCELLED', 1, DATE_SUB(NOW(), INTERVAL 3 DAY), NULL, NULL),
+(5, 'TK-2027-NAM-STU01', 105, 1, '2', '6', 'A01', '5', 'Lê Hoàng Nam (Sinh viên TDTU)', 'ISSUED', 1, DATE_SUB(NOW(), INTERVAL 12 HOUR), NULL, NULL);
+
+INSERT INTO `ticket_transfers` (`id`, `ticket_id`, `from_user_id`, `to_user_id`, `to_owner_name`, `transferred_at`) VALUES
+(1, 3, '5', '4', 'Trần Thị Bích', DATE_SUB(NOW(), INTERVAL 4 HOUR));
+
+INSERT INTO `checkin_logs` (`id`, `ticket_id`, `ticket_code`, `event_id`, `staff_id`, `result`, `scanned_at`) VALUES
+(1, 2, 'TK-2027-AN-FAN01', '1', '7', 'SUCCESS', DATE_SUB(NOW(), INTERVAL 1 HOUR)),
+(2, 2, 'TK-2027-AN-FAN01', '1', '8', 'ALREADY_CHECKED_IN', DATE_SUB(NOW(), INTERVAL 50 MINUTE)),
+(3, 4, 'TK-2027-AN-CANCEL', '1', '7', 'CANCELLED', DATE_SUB(NOW(), INTERVAL 30 MINUTE));
 
 
 -- ==============================================================================

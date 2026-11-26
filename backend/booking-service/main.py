@@ -11,6 +11,7 @@ if sys.platform == "win32":
     BaseSelectorEventLoop._read_from_self = _read_from_self_patched
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from decimal import Decimal
@@ -33,6 +34,76 @@ HOLD_MINUTES = 10
 AUTO_RELEASE_SECONDS = 30
 # Giới hạn số vé tối đa mỗi đơn theo loại vé (đề bài: vé Student tối đa 4 vé/đơn)
 MAX_PER_ORDER = {"STUDENT": 4}
+
+TICKET_SERVICE_URL = os.getenv("TICKET_SERVICE_URL", "http://localhost:8005").rstrip("/")
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "f26c8942b5fc04b2bec53437a0c1c9c42b6a9fbc2a363c5b")
+
+
+def lookup_owner_name(db: Session, user_id: str) -> str:
+    try:
+        from sqlalchemy import text
+        row = db.execute(
+            text("SELECT full_name FROM identity_db.users WHERE id = :uid LIMIT 1"),
+            {"uid": user_id},
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    except Exception:
+        pass
+    return f"Khách hàng #{user_id}"
+
+
+def issue_tickets_for_booking(db: Session, booking_id: int, owner_name: Optional[str] = None):
+    """Gọi sang Ticket Service (Port 8005) để phát hành vé điện tử QR sau khi đơn CONFIRMED."""
+    try:
+        import requests
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking or not booking.items:
+            return None
+        resolved_name = (owner_name or "").strip() or lookup_owner_name(db, str(booking.user_id))
+        payload = {
+            "booking_id": booking.id,
+            "event_id": str(booking.event_id),
+            "owner_user_id": str(booking.user_id),
+            "owner_name": resolved_name[:100],
+            "items": [
+                {
+                    "ticket_type_id": str(item.ticket_type_id),
+                    "seat_id": item.seat_id,
+                    "quantity": int(item.quantity),
+                }
+                for item in booking.items
+            ],
+        }
+        resp = requests.post(
+            f"{TICKET_SERVICE_URL}/tickets/issue",
+            headers={"x-internal-key": INTERNAL_API_KEY},
+            json=payload,
+            timeout=5,
+        )
+        if resp.status_code in (200, 201):
+            return resp.json().get("tickets", [])
+    except Exception as e:
+        print(f"[Booking->Ticket] Không thể phát hành vé cho đơn #{booking_id}: {e}")
+    return None
+
+
+def cancel_tickets_for_booking(booking_id: int):
+    """Khi đơn đã thanh toán bị hoàn tiền/hủy -> gọi Ticket Service hủy toàn bộ vé QR của đơn."""
+    try:
+        import requests
+        resp = requests.get(f"{TICKET_SERVICE_URL}/bookings/{booking_id}/tickets", timeout=5)
+        if resp.status_code == 200:
+            for t in resp.json() or []:
+                code = t.get("ticket_code")
+                if code and t.get("status") == "ISSUED":
+                    requests.post(
+                        f"{TICKET_SERVICE_URL}/tickets/{code}/cancel",
+                        headers={"x-internal-key": INTERNAL_API_KEY},
+                        timeout=5,
+                    )
+    except Exception as e:
+        print(f"[Booking->Ticket] Không thể hủy vé của đơn #{booking_id}: {e}")
 
 
 # ---------- Schemas (dữ liệu client gửi lên) ----------
@@ -360,6 +431,8 @@ def update_booking_status(booking_id: int, status: PaymentResult, db: Session = 
         else:
             release_booking_resources(db, booking_id)
         db.commit()
+        if status == PaymentResult.CONFIRMED:
+            issue_tickets_for_booking(db, booking_id)
         return {"status": "success", "message": f"Đã cập nhật trạng thái đơn hàng thành {status.value}"}
 
     db.rollback()
@@ -367,6 +440,33 @@ def update_booking_status(booking_id: int, status: PaymentResult, db: Session = 
     booking = db.query(Booking).filter(Booking.id == booking_id).first()
     if not booking:
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn hàng!")
+
+    # Trường hợp hoàn tiền (Refund) cho đơn đã CONFIRMED: hủy đơn, trả ghế SOLD về kho và hủy vé QR
+    if status == PaymentResult.CANCELLED and booking.status == "CONFIRMED":
+        refund_claimed = db.query(Booking).filter(
+            Booking.id == booking_id, Booking.status == "CONFIRMED"
+        ).update({"status": "CANCELLED"}, synchronize_session=False)
+        if refund_claimed == 1:
+            db.query(SeatReservation).filter(
+                SeatReservation.booking_id == booking_id,
+                SeatReservation.status.in_(["HELD", "SOLD"]),
+            ).update({"status": "RELEASED"}, synchronize_session=False)
+            standing_items = db.query(BookingItem).filter(
+                BookingItem.booking_id == booking_id,
+                BookingItem.seat_id.is_(None),
+            ).all()
+            for item in standing_items:
+                db.query(TicketInventory).filter(
+                    TicketInventory.event_id == booking.event_id,
+                    TicketInventory.ticket_type_id == item.ticket_type_id,
+                    TicketInventory.sold_quantity >= item.quantity,
+                ).update(
+                    {"sold_quantity": TicketInventory.sold_quantity - item.quantity},
+                    synchronize_session=False,
+                )
+            db.commit()
+            cancel_tickets_for_booking(booking_id)
+            return {"status": "success", "message": "Đã hủy đơn hoàn tiền, trả ghế và vô hiệu hóa vé QR."}
 
     # Thanh toán đến trễ: đơn đã hết hạn -> trả ghế/vé về kho, báo cần hoàn tiền
     if status == PaymentResult.CONFIRMED and booking.status in ("PENDING_PAYMENT", "EXPIRED"):
@@ -438,3 +538,20 @@ def list_user_bookings(user_id: str, db: Session = Depends(get_db)):
         .all()
     )
     return [booking_to_dict(b) for b in bookings]
+
+
+# 9. Đảm bảo đơn đã CONFIRMED được phát hành vé điện tử bên Ticket Service (Idempotent)
+@app.post("/bookings/{booking_id}/ensure-tickets")
+def ensure_booking_tickets(
+    booking_id: int, owner_name: Optional[str] = None, db: Session = Depends(get_db)
+):
+    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Không tìm thấy đơn hàng!")
+    if booking.status != "CONFIRMED":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Chỉ phát hành vé cho đơn đã CONFIRMED (trạng thái hiện tại: {booking.status})!",
+        )
+    tickets = issue_tickets_for_booking(db, booking_id, owner_name=owner_name) or []
+    return {"status": "success", "booking_id": booking_id, "tickets": tickets}

@@ -13,10 +13,10 @@ from sqlalchemy.orm import Session
 from db import get_db
 from model import User, UserRole, UserStatus
 
-# Cấu hình bảo mật từ biến môi trường
+# Cấu hình bảo mật từ biến môi trường (1 phiên đăng nhập tối đa 2 tiếng = 120 phút)
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "super_secret_jwt_key_identity_service_2027_soa_tdtu")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+ACCESS_TOKEN_EXPIRE_MINUTES = min(int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "120")), 120)
 MOCK_GOOGLE_OAUTH = os.getenv("MOCK_GOOGLE_OAUTH", "true").lower() == "true"
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 BCRYPT_ROUNDS = int(os.getenv("BCRYPT_ROUNDS", "10"))
@@ -110,14 +110,17 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 # ==================== JWT UTILS ====================
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Tạo JWT access token chứa thông tin định danh và vai trò người dùng."""
+    """Tạo JWT access token chứa thông tin định danh và vai trò người dùng (tối đa 2 giờ)."""
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+    now = datetime.utcnow()
+    max_delta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    if expires_delta is not None:
+        effective_delta = min(expires_delta, max_delta)
     else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        effective_delta = max_delta
 
-    to_encode.update({"exp": expire})
+    expire = now + effective_delta
+    to_encode.update({"iat": now, "exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 

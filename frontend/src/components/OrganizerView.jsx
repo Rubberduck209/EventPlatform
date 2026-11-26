@@ -59,6 +59,19 @@ export default function OrganizerView({ user, onLogout }) {
     return idx >= 0 ? idx + 1 : ev.id;
   };
 
+  // Lấy số thứ tự Mã NV (#1, #2, #3...) độc lập cho từng Ban tổ chức
+  const getStaffSeq = (staffOrUserId) => {
+    if (!staffOrUserId) return '';
+    const sorted = [...managedStaff].sort((a, b) => a.id - b.id);
+    if (typeof staffOrUserId === 'object') {
+      if (staffOrUserId.org_staff_id) return staffOrUserId.org_staff_id;
+      const idx = sorted.findIndex((item) => Number(item.id) === Number(staffOrUserId.id));
+      return idx >= 0 ? idx + 1 : staffOrUserId.id;
+    }
+    const idx = sorted.findIndex((item) => Number(item.id) === Number(staffOrUserId));
+    return idx >= 0 ? idx + 1 : staffOrUserId;
+  };
+
   // State cho Modal Xác thực Hủy Sự kiện Bảo mật 3 Lớp
   const [cancelModalEvent, setCancelModalEvent] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
@@ -790,7 +803,8 @@ export default function OrganizerView({ user, onLogout }) {
         staff_role_title: staffRoleTitle.trim(),
         permissions: permissions
       });
-      setMsg({ text: `Đã phân công nhân sự vào Sự kiện #${targetEventId}.`, type: 'success' });
+      const evObj = myEvents.find((ev) => Number(ev.id) === Number(targetEventId));
+      setMsg({ text: `Đã phân công nhân sự vào Sự kiện #${evObj ? getEventSeq(evObj) : targetEventId}.`, type: 'success' });
       setStaffRoleTitle('');
       fetchAssignedStaff();
     } catch (err) {
@@ -2364,24 +2378,42 @@ export default function OrganizerView({ user, onLogout }) {
                         </td>
                       </tr>
                     ) : (
-                      managedStaff.map((s) => (
-                        <tr key={s.id}>
-                          <td className="mono">#{s.id}</td>
-                          <td><strong>{cleanName(s.full_name)}</strong></td>
-                          <td><code>{s.email}</code></td>
-                          <td>{s.phone || '—'}</td>
-                          <td style={{ textAlign: 'right' }}>
-                            <button
-                              type="button"
-                              className="btn btn-danger"
-                              style={{ padding: '0.28rem 0.65rem', fontSize: '0.76rem' }}
-                              onClick={() => handleDeleteStaff(s)}
-                            >
-                              Xóa
-                            </button>
-                          </td>
-                        </tr>
-                      ))
+                      [...managedStaff]
+                        .sort((a, b) => a.id - b.id)
+                        .map((s) => (
+                          <tr key={s.id}>
+                            <td>
+                              <span
+                                style={{
+                                  display: 'inline-block',
+                                  padding: '0.2rem 0.55rem',
+                                  background: '#eff6ff',
+                                  color: '#1d4ed8',
+                                  fontWeight: 700,
+                                  fontSize: '0.8rem',
+                                  borderRadius: 6,
+                                  fontFamily: 'monospace',
+                                  border: '1px solid #bfdbfe'
+                                }}
+                              >
+                                #{getStaffSeq(s)}
+                              </span>
+                            </td>
+                            <td><strong>{cleanName(s.full_name)}</strong></td>
+                            <td><code>{s.email}</code></td>
+                            <td>{s.phone || '—'}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button
+                                type="button"
+                                className="btn btn-danger"
+                                style={{ padding: '0.28rem 0.65rem', fontSize: '0.76rem' }}
+                                onClick={() => handleDeleteStaff(s)}
+                              >
+                                Xóa
+                              </button>
+                            </td>
+                          </tr>
+                        ))
                     )}
                   </tbody>
                 </table>
@@ -2425,11 +2457,13 @@ export default function OrganizerView({ user, onLogout }) {
                         {managedStaff.length === 0 ? (
                           <option value="">-- Chưa có nhân viên --</option>
                         ) : (
-                          managedStaff.map((s) => (
-                            <option key={s.id} value={s.email}>
-                              {cleanName(s.full_name)} — {s.email}
-                            </option>
-                          ))
+                          [...managedStaff]
+                            .sort((a, b) => a.id - b.id)
+                            .map((s) => (
+                              <option key={s.id} value={s.email}>
+                                #{getStaffSeq(s)} — {cleanName(s.full_name)} ({s.email})
+                              </option>
+                            ))
                         )}
                       </select>
                     </div>
@@ -2491,7 +2525,23 @@ export default function OrganizerView({ user, onLogout }) {
                     ) : (
                       assignedStaffList.map((s) => (
                         <tr key={s.id}>
-                          <td className="mono">#{s.staff_user_id}</td>
+                          <td>
+                            <span
+                              style={{
+                                display: 'inline-block',
+                                padding: '0.2rem 0.55rem',
+                                background: '#eff6ff',
+                                color: '#1d4ed8',
+                                fontWeight: 700,
+                                fontSize: '0.8rem',
+                                borderRadius: 6,
+                                fontFamily: 'monospace',
+                                border: '1px solid #bfdbfe'
+                              }}
+                            >
+                              #{s.org_staff_id || getStaffSeq(s.staff_user_id)}
+                            </span>
+                          </td>
                           <td><strong>{cleanName(s.staff_name)}</strong></td>
                           <td><code>{s.staff_email}</code></td>
                           <td>{cleanName(s.staff_role_title)}</td>

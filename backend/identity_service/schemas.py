@@ -70,6 +70,8 @@ class OrganizerProfileResponse(BaseModel):
     approved_at: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    user_email: Optional[str] = None
+    user_full_name: Optional[str] = None
 
 
 # ==================== EVENT STAFF SCHEMAS ====================
@@ -86,6 +88,7 @@ class StaffUserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    org_staff_id: Optional[int] = None
     email: str
     full_name: str
     phone: Optional[str] = None
@@ -118,6 +121,7 @@ class StaffAssignmentResponse(BaseModel):
     event_id: int
     event_title: Optional[str] = None
     staff_user_id: int
+    org_staff_id: Optional[int] = None
     staff_name: str
     staff_email: str
     staff_role_title: str
